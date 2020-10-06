@@ -1,0 +1,23 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1601956884062.000,
+    "dirty" : true,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "0",
+    "id" : "E8C9DF53",
+    "lastKnownWriteTime" : 1601956945,
+    "last_content_update" : 1601957011442,
+    "path" : "C:/Users/UYHDK/projects/multiomics-ad-sts/R/01_sample_check.R",
+    "project_path" : "R/01_sample_check.R",
+    "properties" : {
+        "cursorPosition" : "2,0",
+        "scrollLine" : "0",
+        "tempName" : "Untitled1"
+    },
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}
