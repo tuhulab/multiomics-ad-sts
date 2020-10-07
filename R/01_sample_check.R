@@ -26,6 +26,6 @@ missing_sample <-
   mutate(date_visit = date_visit %>% as.Date(format = "%d.%m.%Y")) %>% 
   left_join(sts_sorting, by = c("visit", "subject", "skin_type")) %>% 
   filter(is.na(box) == TRUE) %>% select(subject, visit, date_visit = date_visit.x) %>% 
-  distinct() 
+  distinct() %>% arrange(subject, visit)
 
 missing_sample %>% xlsx::write.xlsx("data/tape_striping_missing_samples.xlsx")
