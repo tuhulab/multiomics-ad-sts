@@ -1,0 +1,16 @@
+---
+title: "Skin tape striping data analysis"
+author: "Tu Hu"
+date: "12/13/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data inspection
+
+```{r}
+
+```
