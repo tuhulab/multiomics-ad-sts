@@ -7,10 +7,49 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load("dplyr", "stringr")
 ```
 
-## Data inspection
+## Mapping
 
-```{r}
+```{r fastq files}
+sample <-
+  openxlsx::read.xlsx("../data/stp_sorting.xlsx") %>% 
+  as_tibble()
+
+fn <- 
+  list.files("../data/fastq/", pattern = ".fastq.gz") %>% 
+  str_remove("_R(1|2)_001.fastq.gz") %>% 
+  unique()
+writeLines(fn, "../_tmp/fn.txt")
+```
+
+We received in total `r length(fn)` * 2 (paired-end) files.
+
+### QC
+
+```{bash fastqc}
+module load parallel/20200522 jdk/17 perl/5.30.2 fastqc/0.11.9
+cd ..
+ID_PATH=_tmp/fn.txt
+cat ${ID_PATH} | parallel "fastqc data/fastq/{}_R1_001.fastq.gz data/fastq/{}_R2_001.fastq.gz -o data/fastqc"
 
 ```
+
+```{bash multiqc}
+module load anaconda3/4.4.0
+multiqc ../data/fastqc -o ../data/fastqc
+```
+
+```{r average sequencing depth}
+total_read <- 
+  readr::read_tsv("../data/fastqc/multiqc_data/multiqc_fastqc.txt") %>% 
+  select(Sample, `Total Sequences`) %>% 
+  mutate(Sample = Sample %>% str_remove("_R(1|2)_001")) %>% 
+  distinct() %>% 
+  summarise(sum_read = sum(`Total Sequences`)) %>% 
+  pull(sum_read)
+
+total_read / nrow(sample)
+```
+
