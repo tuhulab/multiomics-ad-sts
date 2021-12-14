@@ -26,6 +26,12 @@ writeLines(fn, "../_tmp/fn.txt")
 
 We received in total `r length(fn)` * 2 (paired-end) files.
 
+### Batch information
+```{r}
+openxlsx::read.xlsx("../data/")
+```
+
+
 ### QC
 
 ```{bash fastqc}
@@ -52,4 +58,46 @@ total_read <-
 
 total_read / nrow(sample)
 ```
+
+### Construct reference genome
+
+First, download the latest reference genome from Ensembl
+
+```{bash download ref genome from ensemble}
+mkdir -p ../data/reference
+wget -P ../data/reference ftp://ftp.ensembl.org/pub/release-105/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
+gzip -d ../data/reference/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
+wget -P ../data/reference ftp://ftp.ensembl.org/pub/release-105/gtf/homo_sapiens/Homo_sapiens.GRCh38.105.gtf.gz
+gzip -d ../data/reference/Homo_sapiens.GRCh38.105.gtf.gz
+```
+
+```{bash}
+```
+
+
+```{bash}
+module load jre/1.8.0 brbseqtools/1.6.0
+```
+
+```{bash constract ref genome}
+module load star/2.7.9a
+mkdir -p ../data/STAR_Index/
+cd ../data
+STAR --runMode genomeGenerate --genomeDir STAR_Index/ --genomeFastaFiles reference/Homo_sapiens.GRCh38.dna.primary_assembly.fa --sjdbGTFfile reference/Homo_sapiens.GRCh38.105.gtf --runThreadN 30
+
+```
+
+```{bash STAR alignment}
+cd ../data
+module load star/2.7.9a
+STAR --runMode alignReads --genomeDir STAR_Index/ --outFilterMultimapNmax 1 --readFilesCommand zcat --outSAMtype BAM Unsorted --outFileNamePrefix BAM/test --readFilesIn fastq/1_S1_L001_R1_001.fastq.gz --runThreadN 20
+
+```
+
+```{bash}
+module load jre/1.8.0 brbseqtools/1.6.0
+brbseqtools Crea
+```
+
+
 
