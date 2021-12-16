@@ -35,12 +35,15 @@ We received in total `r length(fn)` * 2 (paired-end) files.
 batch_info <- 
   openxlsx::read.xlsx("../data/batch_info.xlsx") %>% 
   as_tibble() %>% 
-  filter(PCR.batch != "-")
-batch_info %>% 
-  filter(PCR.batch == "PCR1") %>% 
+  filter(PCR.batch != "-") %>% 
+  group_by(PCR.batch) %>% 
   select(Name = sample_id, 
          B1 = UMI.primer.sequence) %>% 
-  readr::write_tsv("../_tmp/batch_info_1.txt")
+  tidyr::nest() %>% 
+  mutate(fn = paste0("../_tmp/batch_info_", PCR.batch %>% str_extract("\\d{1}"), ".txt"))
+
+purrr::map2(batch_info$data,
+            batch_info$fn, ~ readr::write_tsv(.x, .y))
 ```
 
 
