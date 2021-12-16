@@ -49,3 +49,14 @@ vignettes/*.pdf
 
 # End of https://www.toptal.com/developers/gitignore/api/r
 .DS_Store
+
+# data
+data/BAM
+data/fastq
+data/fastqc
+data/STAR_Index
+data/reference
+
+#
+Rmd/*.html
+
