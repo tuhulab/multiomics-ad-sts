@@ -109,7 +109,10 @@ cat ${fn_path} | parallel "STAR --runMode alignReads --genomeDir STAR_Index/ --o
 ```{bash}
 cd ../data
 module load jre/1.8.0 brbseqtools/1.6.0
-brbseqtools CreateDGEMatrix -f fastq/1_S1_L001_R1_001.fastq.gz -b BAM/testAligned.out.bam -c ../_tmp/batch_info_1.txt -gtf reference/Homo_sapiens.GRCh38.105.gtf -p B???????????????????? -o ../_tmp/test
+create_brbmatrix(){brbseqtools CreateDGEMatrix -f fastq/$1_R1_001.fastq.gz -b BAM/$1Aligned.out.bam -c ../_tmp/batch_info_$2.txt -gtf reference/Homo_sapiens.GRCh38.105.gtf -p B???????????????????? -o $1;}
+export -f create_brbmatrix
+parallel --link -a ../_tmp/fn.txt -a ../_tmp/batch.txt create_brbmatrix
+
 ```
 
 ```{r}
