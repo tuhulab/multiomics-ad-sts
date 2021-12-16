@@ -22,13 +22,25 @@ fn <-
   str_remove("_R(1|2)_001.fastq.gz") %>% 
   unique()
 writeLines(fn, "../_tmp/fn.txt")
+
+batch <-
+  fn %>% str_sub(1,1)
+writeLines(batch, "../_tmp/batch.txt")  
 ```
 
 We received in total `r length(fn)` * 2 (paired-end) files.
 
 ### Batch information
 ```{r}
-openxlsx::read.xlsx("../data/")
+batch_info <- 
+  openxlsx::read.xlsx("../data/batch_info.xlsx") %>% 
+  as_tibble() %>% 
+  filter(PCR.batch != "-")
+batch_info %>% 
+  filter(PCR.batch == "PCR1") %>% 
+  select(Name = sample_id, 
+         B1 = UMI.primer.sequence) %>% 
+  readr::write_tsv("../_tmp/batch_info_1.txt")
 ```
 
 
@@ -87,17 +99,31 @@ STAR --runMode genomeGenerate --genomeDir STAR_Index/ --genomeFastaFiles referen
 
 ```
 
-```{bash STAR alignment}
+```{bash STAR alignment reverse read}
 cd ../data
-module load star/2.7.9a
-STAR --runMode alignReads --genomeDir STAR_Index/ --outFilterMultimapNmax 1 --readFilesCommand zcat --outSAMtype BAM Unsorted --outFileNamePrefix BAM/test --readFilesIn fastq/1_S1_L001_R1_001.fastq.gz --runThreadN 20
-
+module load star/2.7.9a parallel/20210722
+fn_path=../_tmp/fn.txt
+cat ${fn_path} | parallel "STAR --runMode alignReads --genomeDir STAR_Index/ --outFilterMultimapNmax 1 --readFilesCommand zcat --outSAMtype BAM Unsorted --outFileNamePrefix BAM/{} --readFilesIn fastq/{}_R2_001.fastq.gz --runThreadN 8"
 ```
 
 ```{bash}
+cd ../data
 module load jre/1.8.0 brbseqtools/1.6.0
-brbseqtools Crea
+brbseqtools CreateDGEMatrix -f fastq/1_S1_L001_R1_001.fastq.gz -b BAM/testAligned.out.bam -c ../_tmp/batch_info_1.txt -gtf reference/Homo_sapiens.GRCh38.105.gtf -p B???????????????????? -o ../_tmp/test
 ```
 
+```{r}
+test_mapping <- 
+  readr::read_tsv("../_tmp/test/output.dge.reads.detailed.txt")
+test_mapping[,-1:-2] %>% colSums()
+```
 
+```{r}
+test_mapping %>% 
+  select(Gene_id, Gene_name, 
+         `05_AD_12_LS`, 
+         `05_AD_22_LS`, `02_AD_22_NL`) %>% 
+  arrange(- `05_AD_12_LS`) %>% 
+  write.csv("../_tmp/mapping_3_samples.csv")
+```
 
