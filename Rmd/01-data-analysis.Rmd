@@ -7,7 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-pacman::p_load("dplyr", "stringr")
+pacman::p_load("dplyr", "stringr", "purrr", "tidyr", "ggplot2")
 ```
 
 ## Mapping
@@ -102,19 +102,82 @@ STAR --runMode genomeGenerate --genomeDir STAR_Index/ --genomeFastaFiles referen
 ```
 
 ```{bash STAR alignment reverse read}
-cd ../data
-module load star/2.7.9a parallel/20210722
+module load gcc/9.4.0 star/2.7.9a parallel/20210722
+cd /home/projects/ku_00015/people/tuhu/multiomics-ad-sts/data
 fn_path=../_tmp/fn.txt
-cat ${fn_path} | parallel "STAR --runMode alignReads --genomeDir STAR_Index/ --outFilterMultimapNmax 1 --readFilesCommand zcat --outSAMtype BAM Unsorted --outFileNamePrefix BAM/{} --readFilesIn fastq/{}_R2_001.fastq.gz --runThreadN 8"
+for i in $(cat ${fn_path}); do STAR --genomeDir STAR_Index/ \
+--runMode alignReads \
+--outFilterMultimapNmax 1 \
+--readFilesCommand zcat \
+--outSAMtype BAM Unsorted \
+--outFileNamePrefix BAM/$i. \
+--readFilesIn fastq/$i\_R2_001.fastq.gz \
+--runThreadN 20 ; done
 ```
 
-```{bash}
+```{bash use forward read to map samples}
 cd ../data
-module load jre/1.8.0 brbseqtools/1.6.0
-create_brbmatrix(){brbseqtools CreateDGEMatrix -f fastq/$1_R1_001.fastq.gz -b BAM/$1Aligned.out.bam -c ../_tmp/batch_info_$2.txt -gtf reference/Homo_sapiens.GRCh38.105.gtf -p B???????????????????? -o $1;}
+module load jre/1.8.0 brbseqtools/1.6.0 parallel/20210722
+create_brbmatrix(){
+brbseqtools CreateDGEMatrix -f fastq/$1_R1_001.fastq.gz -b BAM/$1.Aligned.out.bam -c ../_tmp/batch_info_$2.txt -gtf reference/Homo_sapiens.GRCh38.105.gtf -p B???????????????????? -o $1
+}
 export -f create_brbmatrix
 parallel --link -a ../_tmp/fn.txt -a ../_tmp/batch.txt create_brbmatrix
 ```
 
+##
+```{r}
+reads <- 
+  tibble(fn = list.dirs("../data/") %>% grep("\\d{1}_S\\d{1}_L00\\d{1}$", ., value = T)) %>% 
+  mutate(read = paste0(fn, "/output.dge.reads.detailed.txt"),
+         read = map(read, readr::read_tsv, show_col_types=FALSE),
+         lib_size = map(read, ~ .x[,-1:-2] %>% colSums),
+         batch = fn %>% str_extract("\\d{1}(?=\\_S)"),
+         lane = fn %>% str_extract("L00\\d{1}"),
+         sample_n = map(lib_size, names))
 
+lib_size <- reads %>% select(lib_size, batch) %>% group_by(batch) %>% nest() %>% 
+  mutate(lib_size = map(data, ~ .x[[1]] %>% reduce(`+`)))
+
+libsize_g <- 
+  reads %>% select(batch, lane, lib_size, sample_n) %>% 
+  unnest() %>% 
+  ggplot(aes(sample_n)) + geom_bar(aes(weight=lib_size)) +
+  facet_grid(lane~batch, scales = "free") + scale_y_log10() + 
+  theme(axis.text.x = element_text(angle = 90))
+ggsave("../_tmp/counts_sample.jpg", libsize_g, width = 21, height = 7)
+
+counts <-
+  reads %>% select(batch, read) %>% 
+  mutate(read = map(read, ~ .x[,-1:-2])) %>% 
+  group_by(batch) %>% nest() %>% 
+  mutate(read = map(data, ~ .x[[1]] %>% reduce(`+`))) %>% 
+  pull(read) %>% reduce(cbind) %>% 
+  cbind(reads$read[[1]][,1:2], .) %>% as_tibble(.name_repair = "unique")
+         # read = map(read, ~ cbind(reads$read[[1]][,1:2], .x)))
+
+```
+
+```{r}
+g <- counts$Gene_name
+genes <- c(counts$Gene_name)
+
+require(biomaRt)
+mart <- useMart("ENSEMBL_MART_ENSEMBL")
+mart <- useDataset("hsapiens_gene_ensembl", mart)
+annotLookup <- getBM(
+  mart = mart,
+  attributes = c(
+    "hgnc_symbol",
+    "entrezgene_id",
+    "ensembl_gene_id",
+    "gene_biotype"),
+  filter = "hgnc_symbol",
+  values = g,
+  uniqueRows=TRUE)
+g_p <- annotLookup %>% filter(gene_biotype == "protein_coding") %>% pull(hgnc_symbol)
+
+counts_g_p <- counts %>% filter(Gene_name %in% g_p)
+counts_g_p %>% readr::write_csv("../data/counts_pcoding.csv")
+```
 
