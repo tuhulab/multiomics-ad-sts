@@ -1,5 +1,5 @@
 ---
-title: "Skin tape striping - mapping"
+title: "Skin tape striping data analysis"
 author: "Tu Hu"
 date: "12/13/2021"
 output: html_document
