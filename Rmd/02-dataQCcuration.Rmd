@@ -487,7 +487,7 @@ se_qc$qc_EDC_count100 <- qc_EDC_count100
 se_qc$qc_sensitivity_200 <- qc_sensitivity_g_1 > 200
 se_qc$qc_0_4 <- qc_EDC_5percent + qc_EDC_count100 + (qc_sensitivity_g_1 > 200) + qc_MT_ratio15
 se_qc$qc_coverage <- ifelse(se_qc$counts_sum < 30000, "low", "high")
-
+# saveRDS(se_qc, "../data/se_qc.rds")
 ```
 
 After QC, we detected expression of `r nrow(se_qc[,se_qc$qc_0_4>2])` genes, with > 1 count in at least 80% of samples. After a 4-point scheme quality filtering, We kept `r ncol(se_qc[,se_qc$qc_0_4>2])` samples for further analysis.
@@ -559,19 +559,6 @@ topTable(fit, number = Inf, coef = 1) %>% as_tibble(rownames = "Gene_name") %>%
 
 # V1 LSvsHC -----------------
 
-
-## write out data
-se_qc_nMT %>% assay(2) %>% as_tibble() %>% 
-  readr::write_csv("../data/counts_TMMwsp.csv") 
-se_qc_nMT %>% assay(4) %>% as_tibble() %>% 
-  readr::write_csv("../data/counts_VST.csv")
-se_qc_nMT %>% assay(5) %>% as_tibble() %>% 
-  readr::write_csv("../data/counts_rlog.csv")
-se_qc_nMT %>% assay(6) %>% as_tibble() %>% 
-  readr::write_csv("../data/counts_MTnorm.csv")
-
-tibble(gene_name = rownames(se_qc_nMT)) %>% readr::write_csv("../data/gene_name.csv")
-colData(se_qc_nMT) %>% as_tibble() %>% readr::write_csv("../data/metadataNew.csv")
 ```
 
 ```{r}
@@ -627,16 +614,14 @@ dge_ad_qc34_result %>% arrange(test, -logFC) %>%
 ```{r }
 library(zinbwave)
 
-se_qc <- readr::read_rds("../data/se_qc.rds")
+# se_qc <- readr::read_rds("../data/se_qc.rds")
 
-se_zinbwave <- se_qc[,se_qc$qc_0_4 > 2]
+se_zinbwave <- se_qc[,se_qc$qc_0_4 > 2] # only keep high quality samples
 
 # vars <- assay(se_zinbwave) %>% log1p() %>% rowVars()
 # names(vars) <- rownames(se_zinbwave)
 # vars <- sort(vars, decreasing = T)
 # head(vars, 20)
-
-
 
 zinbwave <- zinbwave(se_zinbwave, K=2, epsilon=1000)
 
