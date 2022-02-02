@@ -682,7 +682,7 @@ set.seed(0714)
 
 library(Rtsne)
 W <- reducedDim(zinbwave_cov)
-tsne_data <- Rtsne(W, pca = FALSE, perplexity=15, max_iter=5000)
+tsne_data <- Rtsne(W, pca = FALSE, perplexity=20, max_iter=5000)
 
 data.frame(Dim1=tsne_data$Y[,1], Dim2=tsne_data$Y[,2], 
            skin_type=colData(zinbwave_cov)$skin_type,
