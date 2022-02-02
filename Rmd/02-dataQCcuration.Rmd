@@ -60,7 +60,7 @@ counts_filterS <-
 
 ```
 
-```{r}
+```{r, eval=FALSE}
 # MT genes
 MT_ratio <- 
   tibble(
@@ -156,7 +156,7 @@ metadata_edit <-
   mutate(date_visit = as.Date(date_visit, "%m/%d/%Y"))
 
 metadata_new <-
-  metadata %>% select(sample_name) %>% left_join(metadata_edit) %>% 
+  metadata %>% dplyr::select(sample_name) %>% left_join(metadata_edit) %>% 
   mutate(skin_type = skin_type %>% forcats::fct_relevel(c("HC", "NL", "LS")),
          visit_quarter = visit_quarter %>% forcats::fct_relevel(c("Q1", "Q2", "Q3", "Q4")))
 ```
@@ -202,7 +202,7 @@ wrong_labels
 
 ```{r Visualize library size, message=FALSE, warning=FALSE}
 lib_size <- 
-  reads %>% select(lib_size, batch) %>% unnest(lib_size)
+  reads %>% dplyr::select(lib_size, batch) %>% unnest(lib_size)
 
 lib_size_g <- 
   lib_size %>% 
@@ -310,48 +310,13 @@ n_g_x <- length(g_x[g_x > 1])     # expressed genes
 
 ## Data transformation
 
-### TMM with singleton pairing transformation
 
-The TMMwsp method stands for "TMM with singleton pairing". This is a variant of TMM that is intended to perform better for data **with a high proportion of zeros*. 
-In the TMM method, genes that have zero count in either library are ignored when comparing pairs of libraries. 
-In the TMMwsp method, the positive counts from such genes are reused to increase the number of features by which the libraries are compared. The singleton positive counts are paired up between the libraries in decreasing order of size and then a slightly modified TMM method is applied to the re-ordered libraries. 
-
-```{r TMMwsp transformation, message=FALSE, warning=FALSE}
-se_scale <-
-  se %>%
-  keep_abundant(minimum_proportion = 0,
-                minimum_counts = 5) %>% # keep > 1 per million
-  # se[g_x > 5, ] %>% 
-  scale_abundance(method = "TMMwsp")
-```
-
-```{r top-20 expressed genes}
-highly_expressed_g <- 
-  se_scale %>% assay(2) %>% rowMeans() %>% 
-  sort(decreasing = T) %>% head(20) %>% 
-  enframe(name = "Gene_name", value = "mean_expression")
-
-knitr::kable(highly_expressed_g)
-```
 
 
 ### PCA and Heatmap
 
 #### dimension reduction
 
-```{r figure 1b-pca-vis}
-pca <- 
-  se_scale %>%     
-  # keep_variable() %>% 
-  reduce_dimensions(method = "PCA", top = 100)
-
-pca %>%
-  pivot_sample() %>%
-  ggplot(aes(x = PC1, y = PC2, color = skin_type)) + 
-  scale_color_manual(values = pca_color) +
-  geom_point() +
-  ggtitle("PCA plot based on 500 genes w. highest variations")
-```
 
 ### Heatmap
 
@@ -408,6 +373,7 @@ knitr::include_graphics("../data/figure/heatmap_allg.jpeg")
 ```
 
 ### PCA plot using generalized PCA
+
 ```{r eval=FALSE}
 library("glmpca")
 gpca <- glmpca(counts(dds), L=2)
@@ -423,81 +389,6 @@ gpca.dat$cell <- dds$cell
 
 We performed data curation by filtering out samples with low epidermis signature genes (FLG, LORICRIN), total sequencing depth, correlation coefficient with the group.
 
-### calc QC metrics
-```{r out.width='100%'}
-# sequencing depth
-
-epidermis <- 
-  se[c("FLG", "LORICRIN"),] %>% 
-  as_tibble() %>% 
-  pivot_wider(names_from = feature, values_from = counts) %>% 
-  left_join(counts_sum, by = "sample")
-
-# correlation
-cor <- 
-  tibble(
-    tissue_type  = se_scale$skin_type %>% unique,
-    se_skin_type = map(tissue_type, ~ se_scale[,se_scale$skin_type == .]),
-    cor = map(se_skin_type, ~ .x %>% assay(2) %>% cor(method = "spearman")),
-    # cor_p = map(cor, ~ .x %>% corrplot::corrplot(mar = c(0,0,0,0), type = "upper", cex = 8))
-    )
-
-S_h_q <- # high quality sample
-  se[c("LORICRIN", "FLG"),] %>% 
-  as_tibble() %>% 
-  pivot_wider(names_from = feature, values_from = counts) %>% 
-  left_join(counts_sum) %>% 
-  filter(LORICRIN > 10, 
-         FLG > 10) %>% 
-         # counts_sum > 2000) %>% 
-  pull(sample_name)
-```
-
-```{r NL}
-corrplot::corrplot(cor$cor[[1]], mar = c(0,0,0,0), type = "upper", tl.cex = 0.4)
-```
-
-```{r LS}
-corrplot::corrplot(cor$cor[[2]], mar = c(0,0,0,0), type = "upper", tl.cex = 0.4)
-```
-
-```{r HC}
-corrplot::corrplot(cor$cor[[3]], mar = c(0,0,0,0), type = "upper", tl.cex = 0.4)
-```
-
-
-```{r before and after scaling, eval=FALSE}
-friendly_cols <- dittoSeq::dittoColors()
-custom_theme <-
-  list(
-    scale_fill_manual(values = friendly_cols),
-    scale_color_manual(values = friendly_cols),
-    theme_bw() +
-      theme(
-        panel.border = element_blank(),
-        axis.line = element_line(),
-        panel.grid.major = element_line(size = 0.2),
-        panel.grid.minor = element_line(size = 0.1),
-        text = element_text(size = 12),
-        legend.position = "bottom",
-        strip.background = element_blank(),
-        axis.title.x = element_text(margin = margin(t = 10, r = 10, b = 10, l = 10)),
-        axis.title.y = element_text(margin = margin(t = 10, r = 10, b = 10, l = 10)),
-        axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)
-      )
-  )
-
-se_rmS_scale %>%
-  # Reshaping
-  pivot_longer(cols = c("counts", "counts_scaled"), names_to = "source", values_to = "abundance") %>%
-
-  # Plotting
-  ggplot(aes(x = abundance + 1, color = sample_name)) +
-  geom_density() +
-  facet_wrap(~source) +
-  scale_x_log10() +
-  custom_theme
-```
 
 ```{r heatmap, eval=FALSE}
 heatmap_data_m <-
@@ -545,6 +436,7 @@ draw(heatmap, heatmap_legend_side = "right",
 dev.off()
 
 ```
+
 ## Epidermal differentiation coomplex (EDC) genes
 
 We detected expression of 2310 genes. We performed quality control based on a 4-point systematic data quality evaluation.
@@ -587,47 +479,19 @@ qc_EDC_count100 <- colSums(assay(se_x[g_EDC,])) > 100
 ```
 
 ```{r construct new se}
-se_qc <- se_x
+se_qc <- se_x[!rownames(se_x) %>% str_detect("MT-"), ]
 se_qc$qc_hair_1percent <- qc_hair_1percent
 se_qc$qc_MT_ratio15 <- qc_MT_ratio15
 se_qc$qc_EDC_5percent <- qc_EDC_5percent
 se_qc$qc_EDC_count100 <- qc_EDC_count100
 se_qc$qc_sensitivity_200 <- qc_sensitivity_g_1 > 200
 se_qc$qc_0_4 <- qc_EDC_5percent + qc_EDC_count100 + (qc_sensitivity_g_1 > 200) + qc_MT_ratio15
-se_qc$qc_coverage <- ifelse(se_qc$counts_sum < 100000, "low", "high")
+se_qc$qc_coverage <- ifelse(se_qc$counts_sum < 30000, "low", "high")
 
-assay(se_qc) <-
-  se_qc %>% DESeqDataSet(design = ~ skin_type) %>% vst(blind = T) %>% assay()
 ```
 
 After QC, we detected expression of `r nrow(se_qc[,se_qc$qc_0_4>2])` genes, with > 1 count in at least 80% of samples. After a 4-point scheme quality filtering, We kept `r ncol(se_qc[,se_qc$qc_0_4>2])` samples for further analysis.
 
-
-
-
-
-# heatmap new se
-```{r}
-TMM <- 
-  se_qc[,se_qc$qc_0_4 > 2] %>% 
-  scale_abundance(method = "TMM") %>% 
-  plot_heatmap_from_se()
-
-TMMwsp <- 
-  se_qc[,se_qc$qc_0_4 > 2] %>% 
-  scale_abundance(method = "TMMwsp") %>% 
-  plot_heatmap_from_se()
-
-
-draw(TMM, heatmap_legend_side = "right",
-     annotation_legend_side = "top", merge_legend = FALSE)
-```
-
-
-```{r}
-draw(TMMwsp, heatmap_legend_side = "right",
-     annotation_legend_side = "top", merge_legend = FALSE)
-```
 
 
 
@@ -695,10 +559,6 @@ topTable(fit, number = Inf, coef = 1) %>% as_tibble(rownames = "Gene_name") %>%
 
 # V1 LSvsHC -----------------
 
-
-> assayNames(se_qc_nMT)
-[1] "counts"  "TMMwsp"  "RLE"    
-[4] "VST"     "rlog"    "MT_norm"
 
 ## write out data
 se_qc_nMT %>% assay(2) %>% as_tibble() %>% 
@@ -896,8 +756,6 @@ se_zinbwave["FAM126B",] %>%
 
 ```{r}
 library(NOISeq)
-
-
 mydata <- readData(data = se_zinbwave %>% scale_abundance(method = "TMMwsp") %>% assay(2),
                  factors = colData(se_zinbwave)
 )
