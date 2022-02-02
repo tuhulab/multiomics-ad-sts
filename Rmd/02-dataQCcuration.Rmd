@@ -465,13 +465,6 @@ corrplot::corrplot(cor$cor[[2]], mar = c(0,0,0,0), type = "upper", tl.cex = 0.4)
 corrplot::corrplot(cor$cor[[3]], mar = c(0,0,0,0), type = "upper", tl.cex = 0.4)
 ```
 
-```{r filter}
-se_rmS_scale <-
-  se[, S_h_q] %>%
-  keep_abundant(minimum_proportion = 0,
-                minimum_counts = 5) %>% # keep > 1 per million
-  scale_abundance(method = "TMMwsp")
-```
 
 ```{r before and after scaling, eval=FALSE}
 friendly_cols <- dittoSeq::dittoColors()
@@ -603,26 +596,14 @@ se_qc$qc_sensitivity_200 <- qc_sensitivity_g_1 > 200
 se_qc$qc_0_4 <- qc_EDC_5percent + qc_EDC_count100 + (qc_sensitivity_g_1 > 200) + qc_MT_ratio15
 se_qc$qc_coverage <- ifelse(se_qc$counts_sum < 100000, "low", "high")
 
-
+assay(se_qc) <-
+  se_qc %>% DESeqDataSet(design = ~ skin_type) %>% vst(blind = T) %>% assay()
 ```
 
 After QC, we detected expression of `r nrow(se_qc[,se_qc$qc_0_4>2])` genes, with > 1 count in at least 80% of samples. After a 4-point scheme quality filtering, We kept `r ncol(se_qc[,se_qc$qc_0_4>2])` samples for further analysis.
 
 
-# heatmap non-normalized
-```{r}
-# heatmap_before_non_normalized <- 
-#   se_qc %>% 
-#   plot_heatmap_from_se(assay_no = 1)
-# 
-# draw(heatmap_before_non_normalized, heatmap_legend_side = "right",
-#      annotation_legend_side = "top", merge_legend = FALSE)
-```
 
-## after filtering MT-genes
-```{r}
-se_qc[rownames(se_qc) %>% str_detect("MT-"),se_qc$qc_0_3 > 1] %>% assay() %>% colSums()
-```
 
 
 # heatmap new se
@@ -786,14 +767,16 @@ dge_ad_qc34_result %>% arrange(test, -logFC) %>%
 ```{r }
 library(zinbwave)
 
+se_qc <- readr::read_rds("../data/se_qc.rds")
+
 se_zinbwave <- se_qc[,se_qc$qc_0_4 > 2]
 
 # vars <- assay(se_zinbwave) %>% log1p() %>% rowVars()
 # names(vars) <- rownames(se_zinbwave)
 # vars <- sort(vars, decreasing = T)
 # head(vars, 20)
-# 
-se_zinbwave <- se_zinbwave[,]
+
+
 
 zinbwave <- zinbwave(se_zinbwave, K=2, epsilon=1000)
 
@@ -865,7 +848,72 @@ data.frame(Dim1=tsne_data$Y[,1], Dim2=tsne_data$Y[,2],
 
 ### differential expression analysis
 ```{r}
+zinbwave_cov <- zinbwave(se_zinbwave, K=2, 
+                         X = "~qc_0_4",
+                         epsilon=1e12,
+                         observationalWeights = TRUE)
+
+# coverage
+# W <- reducedDim(zinbwave_cov)
+data.frame(W, skin_type = colData(se_zinbwave)$skin_type,
+              coverage = colData(se_zinbwave)$qc_coverage
+           ) %>%
+    ggplot(aes(W1, W2, 
+               colour=skin_type, shape=coverage)) + 
+               geom_point() + 
+    scale_color_brewer(type = "qual", palette = "Set1") +
+  theme_classic()
+
 weights <- assay(zinbwave_cov, "weights")
+library(edgeR)
+
+dge <- DGEList(assay(se_zinbwave))
+dge <- calcNormFactors(dge)
+
+design <- model.matrix(~skin_type, data = colData(se_zinbwave))
+dge$weights <- weights
+dge <- estimateDisp(dge, design)
+fit <- glmFit(dge, design)
+lrt <- glmWeightedF(fit, coef = "skin_typeLS")
+topTags(lrt, n = Inf) %>% data.frame() %>% arrange(-logFC)
 ```
+
+```{r deseq2}
+library(DESeq2)
+dds <- DESeqDataSet(zinbwave_cov, design = ~ skin_type)
+dds <- DESeq(dds, sfType = "poscounts", useT = T, minmu = 1e-6)
+res <- lfcShrink(dds, coef = "skin_type_LS_vs_HC")
+```
+
+
+```{r}
+se_zinbwave["FAM126B",] %>% 
+  as_tibble() %>% 
+  ggplot(aes(skin_type, counts)) +
+  geom_boxplot() + geom_point()
+```
+
+
+```{r}
+library(NOISeq)
+
+
+mydata <- readData(data = se_zinbwave %>% scale_abundance(method = "TMMwsp") %>% assay(2),
+                 factors = colData(se_zinbwave)
+)
+
+mynoiseq <-
+  noiseq(mydata, k=0.5, norm = "n",
+         factor = "skin_type", lc = 1,
+         conditions = c("LS", "HC"))
+         # replicates = "biological")
+```
+
+```{r}
+mynoiseq@results[[1]] %>% as_tibble(rownames = "gene_name") %>% 
+  filter(!gene_name %>% str_detect("MT-"), M > 0) %>% 
+  arrange(-ranking)
+```
+
 
 
