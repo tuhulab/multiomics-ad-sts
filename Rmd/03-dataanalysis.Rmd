@@ -1,0 +1,22 @@
+---
+title: "Skin tape striping - Different normalization method"
+author: "Tu Hu"
+date: "1/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Differential gene expression analysis
+
+### Baseline difference
+
+
+
+
+
+
+

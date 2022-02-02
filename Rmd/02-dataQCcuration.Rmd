@@ -1,0 +1,871 @@
+---
+title: "Skin tape striping - data QC and curation"
+author: "Tu Hu"
+date: "1/7/2022"
+output: html_document
+---
+
+## Mapping
+
+Bulk RNA barcoding and sequencing (BRB-seq) data was mapped by aligning reverse reads to human reference genome (GRCh38.105) by **STAR(2.7.9a)**, then de-multiplexing by the forward read barcoding. 
+The average mapping rate is **`r knitr::load_cache("load-reads", "mean_map_rate")`**, which is comparable with conventional RNA-seq (such as GSE193309).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+pacman::p_load(
+  "dplyr", "stringr", "purrr", "tidyr", "ggplot2", 
+  "tibble", "SummarizedExperiment", "tidySummarizedExperiment", 
+  "tidybulk", "ComplexHeatmap", "ggpubr", "DT",
+  "DESeq2", "BiocParallel", "edgeR")
+pca_color <- c("LS" = "#eb2d0c", "NL" = "#eb8b9b", "HC" = "#91cf60")
+core_n <- future::availableCores()
+register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
+```
+
+```{r load-reads, message=FALSE, warning=FALSE, cache=TRUE}
+# star results
+calc_map_rate <- 
+  function(df = ...){
+    sum(df[nrow(df)-4:nrow(df),-1:-2]) / sum(df[,-1:-2])
+  }
+
+reads <- 
+  tibble(path = list.dirs("../data/brbmatrix") %>% grep("\\d{1}$", ., value = T)) %>% 
+  mutate(read = paste0(path, "/output.dge.reads.detailed.txt"),
+         read = map(read, readr::read_tsv, show_col_types=FALSE),
+         lib_size = map(read, ~ .x[,-1:-2] %>% colSums),
+         sample_n = map(lib_size, names),
+         batch = path %>% str_extract("\\d{1}$"),
+         map_rate = map_dbl(read, calc_map_rate))
+
+mean_map_rate <-
+  scales::label_percent()(mean(reads$map_rate))
+```
+
+```{r combine reads from five batches}
+counts <-
+  reads %>% 
+  dplyr::select(batch, read) %>% 
+  mutate(read = map(read, ~ .x[,-1:-2])) %>% 
+  group_by(batch) %>% nest() %>% 
+  mutate(read = map(data, ~ .x[[1]] %>% purrr::reduce(`+`))) %>% 
+  pull(read) %>% purrr::reduce(cbind) %>% 
+  cbind(reads$read[[1]][,1:2], .) # gene name and gene id
+
+counts_filterS <- 
+  counts[,!counts %>% names() %>%
+           str_detect("\\.|Unknown_Barcode|02_CO_33")] %>% 
+  as_tibble() %>% 
+  filter(!is.na(Gene_name))
+
+```
+
+```{r}
+# MT genes
+MT_ratio <- 
+  tibble(
+  MT_counts = counts[counts$Gene_name %>% str_detect("MT\\-") %>% which, -1:-2] %>% colSums(),
+  total_counts = counts[, -1:-2] %>% colSums(),
+  MT_ratio = (MT_counts / total_counts) * 100
+) %>% 
+  arrange(MT_ratio) %>% select(MT_ratio) %>% 
+  mutate(rank = 1:nrow(.)) %>% 
+  ggplot(aes(rank, MT_ratio)) + geom_point() +
+  ylab("counts(MT genes) / total counts") +
+  theme_classic() +
+  ggtitle("Ratio of mitochondrial gene counts and total counts")
+
+MT_c <-
+  tibble(
+  MT_counts = counts[counts$Gene_name %>% str_detect("MT\\-") %>% which, -1:-2] %>% colSums(),
+  total_counts = counts[, -1:-2] %>% colSums(),
+  MT_ratio = (MT_counts / total_counts) * 100
+) %>% 
+  ggplot(aes(total_counts, MT_counts)) + geom_point() +
+  theme_classic() +
+  ggtitle("Ratio of mitochondrial gene counts and total counts")
+  
+  
+ggsave("../data/figure/MT_ratio.jpeg", MT_ratio, height = 5)
+
+```
+
+```{r keep only protein coding genes, message=FALSE, warning=FALSE, eval=FALSE}
+g <- counts$Gene_name
+genes <- c(counts$Gene_name)
+mart <- biomaRt::useMart("ENSEMBL_MART_ENSEMBL")
+mart <- biomaRt::useDataset("hsapiens_gene_ensembl", mart)
+annotLookup <- biomaRt::getBM(
+  mart = mart,
+  attributes = c(
+    "hgnc_symbol",
+    "entrezgene_id",
+    "ensembl_gene_id",
+    "gene_biotype"),
+  filter = "hgnc_symbol",
+  values = g,
+  uniqueRows=TRUE)
+g_p <- annotLookup %>% filter(gene_biotype == "protein_coding") %>% pull(hgnc_symbol)
+saveRDS(g_p, file = "../data/g_p.rds") # time-consuming to exec
+```
+
+```{r filter only p coding g}
+g_p <- readRDS("../data/g_p.rds") # time-consuming to exec
+# g_p <- g_p[!g_p %>% str_detect("^MT-")] # remove MT genes
+counts_g_p <- counts_filterS %>% filter(Gene_name %in% g_p)
+```
+
+## Metadata
+
+(Skipped ... same as GSE193309)
+
+```{r clinical record, message=FALSE, warning=FALSE}
+se_punch_biopsy_rnaseq_raw <-
+  readr::read_rds("../../multiomics-ad-phd/data/se_raw.rds")
+
+meta_punch_biopsy_rnaseq_raw <- 
+  colData(se_punch_biopsy_rnaseq_raw) %>% 
+  as_tibble() %>% 
+  mutate(sample_name_join = paste(visit, subject, skin_type, sep = "_")) %>% 
+  dplyr::select(sample_name_join, 
+         gender, contains("scorad"), easi_total_score,
+         date_visit, visit_quarter, biopsy_area) %>% 
+  distinct() %>% filter(!is.na(visit_quarter), 
+                        !is.na(biopsy_area),
+                        !(sample_name_join == "05_AD_13_LS" & date_visit == "21.01.2019"),
+                        !(sample_name_join == "03_AD_13_NL" & date_visit == "01.11.2019"))
+
+metadata <- 
+  tibble(sample_name = colnames(counts_g_p)[-1:-2],
+         visit = sample_name %>% str_extract("^\\d{2}"),
+         group = sample_name %>% str_extract("AD|CO"),
+         subject_id = sample_name %>% str_extract("(AD|CO)_\\d{2}"),
+         skin_type = sample_name %>% str_extract("LS|NL")) %>% 
+  mutate(skin_type = ifelse(group == "CO", "HC", skin_type),
+         sample_name = paste(visit, subject_id, skin_type, sep = "_")) %>%  
+  left_join(meta_punch_biopsy_rnaseq_raw, by=c("sample_name" = "sample_name_join")) %>% 
+  mutate(date_visit = as.Date(date_visit, "%d.%m.%Y"))
+
+colnames(counts_g_p)[-1:-2] <- metadata$sample_name
+# counts_g_p %>% readr::write_csv("../data/counts_pcoding.csv")
+
+# openxlsx::write.xlsx(metadata, "../data/metadata.xlsx")
+
+metadata_edit <- 
+  readr::read_csv("../data/metadata_edit.csv") %>% 
+  mutate(date_visit = as.Date(date_visit, "%m/%d/%Y"))
+
+metadata_new <-
+  metadata %>% select(sample_name) %>% left_join(metadata_edit) %>% 
+  mutate(skin_type = skin_type %>% forcats::fct_relevel(c("HC", "NL", "LS")),
+         visit_quarter = visit_quarter %>% forcats::fct_relevel(c("Q1", "Q2", "Q3", "Q4")))
+```
+
+```{r output data for Thomas Litman, eval=FALSE}
+metadata_new %>% readr::write_csv("../_tmp/tape_striping_metadata.csv")
+counts_g_p %>% readr::write_csv("../_tmp/tape_striping_counts.csv")
+```
+
+```{r construct se}
+se <- SummarizedExperiment(
+  assays = list(counts = counts_g_p[,-1:-2] %>% as.matrix()),
+  colData = metadata_new
+)
+names(se) <- counts_g_p$Gene_name
+
+counts_sum <- 
+  se %>% assay() %>% colSums() %>% enframe(name = "sample", value = "counts_sum")
+
+```
+
+## QC
+
+We applied a 4-point data QC procedures. The samples score 1-point when fulfilling each criteria: (1) the sensitivity of detection (detecting more than 200 genes with higher than 1 count). (2) epidermal differentiation complex (EDC) gene signal intensities, as measured by FLG, FLG2, LORICRIN, LCE1A, S100A7, S100A8, SPRR2E, SPRR1B, IVL. (3) EDC genes is comprised > 5% of total counts (4) mitochondrial genes is comprised <15% of total counts.
+
+### Wrong labels
+
+```{r filtering out wrongly labelled sample}
+wrong_labels <-
+  counts %>% names() %>% 
+  grep("\\.|02_CO_33", ., value = T) %>% str_remove("\\.\\.\\.\\d{1,}") %>% table
+```
+
+We have some wrongly labelled samples, including:
+
+```{r showing wrong labels}
+wrong_labels
+```
+
+### Low read depth
+
+*Read depth (of a sample) = sum of reads of all mapped genes*
+
+```{r Visualize library size, message=FALSE, warning=FALSE}
+lib_size <- 
+  reads %>% select(lib_size, batch) %>% unnest(lib_size)
+
+lib_size_g <- 
+  lib_size %>% 
+  gghistogram(x = "lib_size", xscale = "log10", 
+              binwidth = 0.3, xlab = "Library size (Read depth)", 
+              title = "Histogram of library size (read depth) \nn(sample) = 207, n(gene)=17000", 
+              add = "median", rug = TRUE, fill = "lightgray") 
+
+lib_size_g
+ggsave("../data/figure/lib_size_g.jpeg", lib_size_g, width = 7, height = 5)
+
+lib_size_g %>% facet("batch") %>%  ggpar(font.xtickslab = "8")
+
+median_lib_size <- median(lib_size$lib_size)
+```
+
+We detected a low library sized in general, with median library size `r median_lib_size` and a large variation between RNA yield from each sample, as indicated by the total counts of each sample. However, between each BRB batch, we could not detect a batch effect. 
+
+#### RNA yield (estimated by total counts) variation
+When evaluating the variation of RNA yield, we observed an increasing trend of RNA yield in LS > NL > HC. LS has significantly higher RNA yield from HC (p < 0.001). 
+We also observed the variations of RNA yield across quarters (Q1-Q4).
+We tested RNA yield variation using linear mixed effect model.
+
+```{r RNA yield - skin type}
+colData(se)$counts_sum <- counts_sum$counts_sum
+
+se %>% pivot_sample() %>% 
+  ggboxplot(x = "skin_type", 
+            y = "counts_sum", 
+            yscale = "log10",
+            add = c("jitter"), 
+            color = "skin_type",
+            palette = pca_color,
+            xlab = "Skin type",
+            ylab = "Total counts") +
+  stat_compare_means(comparisons = list(
+    c("HC", "NL"),
+    c("NL", "LS"),
+    c("HC", "LS")
+  ), methods= "t.test") +
+  theme(legend.position = "none")
+```
+
+```{r RNA yield - season}
+se %>% pivot_sample() %>% 
+  filter(!is.na(visit_quarter)) %>% 
+  ggboxplot(x = "visit_quarter", 
+            y = "counts_sum", 
+            yscale = "log10",
+            add = c("jitter"), 
+            color = "visit_quarter",
+            xlab = "Quarter",
+            ylab = "Total counts") +
+    stat_compare_means(comparisons = list(
+    c("Q1", "NL"),
+    c("NL", "LS"),
+    c("HC", "LS")
+    ), methods= "t.test")+
+  stat_compare_means(method = "anova") +
+  theme(legend.position = "none")
+```
+
+```{r}
+se %>% pivot_sample() %>% 
+  filter(!is.na(visit_quarter)) %>% 
+  ggboxplot(x = "biopsy_area", 
+            y = "counts_sum", 
+            yscale = "log10",
+            add = c("jitter"), 
+            color = "biopsy_area",
+            xlab = "Biopsy area",
+            ylab = "Total counts") +
+    stat_compare_means(comparisons = list(
+    c("Q1", "NL"),
+    c("NL", "LS"),
+    c("HC", "LS")
+    ), methods= "t.test")+
+  stat_compare_means(method = "anova") +
+  theme(legend.position = "none")
+```
+
+
+```{r lme}
+lmerTest::lmer(counts_sum ~ skin_type + visit_quarter + biopsy_area + (1|subject_id), data = se %>% pivot_sample() ) %>% broom.mixed::tidy()
+```
+
+### Unknown barcode
+
+```{r unknown barcode, cache=TRUE}
+unknown_barcode_percent <- 
+  sum(counts[-(nrow(counts)-4) : -(nrow(counts)), colnames(counts) == "Unknown_Barcode"]) / sum(counts[-(nrow(counts)-4) : -(nrow(counts)), -1:-2])
+```
+
+Within mapped reads, `r scales::label_percent()(unknown_barcode_percent)` of reads can't find their origins (detected as unknown barcode).
+
+### Number of expressed genes
+```{r expressed genes}
+g_x <- assay(se) %>% rowMeans()   # mean expression of genes
+n_g_x <- length(g_x[g_x > 1])     # expressed genes
+```
+
+- Only protein coding genes (n=`r counts_g_p %>% nrow`) are kept for analysis.
+
+- `r n_g_x` genes are expressed (mean counts > 1).
+
+## Data transformation
+
+### TMM with singleton pairing transformation
+
+The TMMwsp method stands for "TMM with singleton pairing". This is a variant of TMM that is intended to perform better for data **with a high proportion of zeros*. 
+In the TMM method, genes that have zero count in either library are ignored when comparing pairs of libraries. 
+In the TMMwsp method, the positive counts from such genes are reused to increase the number of features by which the libraries are compared. The singleton positive counts are paired up between the libraries in decreasing order of size and then a slightly modified TMM method is applied to the re-ordered libraries. 
+
+```{r TMMwsp transformation, message=FALSE, warning=FALSE}
+se_scale <-
+  se %>%
+  keep_abundant(minimum_proportion = 0,
+                minimum_counts = 5) %>% # keep > 1 per million
+  # se[g_x > 5, ] %>% 
+  scale_abundance(method = "TMMwsp")
+```
+
+```{r top-20 expressed genes}
+highly_expressed_g <- 
+  se_scale %>% assay(2) %>% rowMeans() %>% 
+  sort(decreasing = T) %>% head(20) %>% 
+  enframe(name = "Gene_name", value = "mean_expression")
+
+knitr::kable(highly_expressed_g)
+```
+
+
+### PCA and Heatmap
+
+#### dimension reduction
+
+```{r figure 1b-pca-vis}
+pca <- 
+  se_scale %>%     
+  # keep_variable() %>% 
+  reduce_dimensions(method = "PCA", top = 100)
+
+pca %>%
+  pivot_sample() %>%
+  ggplot(aes(x = PC1, y = PC2, color = skin_type)) + 
+  scale_color_manual(values = pca_color) +
+  geom_point() +
+  ggtitle("PCA plot based on 500 genes w. highest variations")
+```
+
+### Heatmap
+
+Samples are clustered according to read depth (?).
+
+```{r heatmap-generate, eval=FALSE}
+heatmap_data_m <-
+  scale(assay(se_scale, 2) %>% t() %>% log1p(), 
+        center = TRUE, scale = TRUE) %>% t()
+
+sample_site_color <- 
+  colData(se_scale) %>% as_tibble() %>% pull(biopsy_area) %>% unique()
+
+color <- RColorBrewer::brewer.pal(length(sample_site_color), "Pastel2")
+names(color) <- sample_site_color
+
+heatmap_annotation <- 
+  HeatmapAnnotation(
+    `Tissue type` = colData(se_scale) %>% as_tibble() %>% pull(skin_type), 
+    `Anatomic region` = colData(se_scale) %>% as_tibble() %>% pull(biopsy_area),
+    col = list(`Tissue type` = pca_color),
+               # `Anatomic region` = color),
+    annotation_legend_param = list(`Tissue type` = list(nrow = 1, 
+                                                        title_gp = gpar(fontsize = 16),
+                                                        labels_gp = gpar(fontsize = 16)),
+                                   `Anatomic region` = list(nrow = 1,
+                                                            title_gp = gpar(fontsize = 16),
+                                                            labels_gp = gpar(fontsize = 16))
+                                   ))
+
+heatmap <- ComplexHeatmap::Heatmap(heatmap_data_m,
+                        name = "gene expression",
+                        column_dend_reorder = TRUE,
+                        # clustering_method_columns = "complete",
+                        show_column_names = FALSE,
+                        show_row_names = FALSE,
+                        show_row_dend = FALSE,
+                        # row_names_gp = gpar(fontsize = min(10, 800 * 1.5 / dim(heatmap_data_m)[1])),
+                        top_annotation = heatmap_annotation,
+                        heatmap_legend_param = list(
+                          title_gp = gpar(fontsize = 16),
+                          labels_gp = gpar(fontsize = 14)
+                          ))
+
+jpeg("../data/figure/heatmap_allg.jpeg",
+     width = 480*2, height = 480*1.3)
+draw(heatmap, heatmap_legend_side = "right",
+     annotation_legend_side = "top", merge_legend = FALSE)
+dev.off()
+```
+
+```{r include heatmap, fig.align='center', out.width='100%'}
+knitr::include_graphics("../data/figure/heatmap_allg.jpeg")
+```
+
+### PCA plot using generalized PCA
+```{r eval=FALSE}
+library("glmpca")
+gpca <- glmpca(counts(dds), L=2)
+gpca.dat <- gpca$factors
+gpca.dat$dex <- dds$dex
+gpca.dat$cell <- dds$cell
+```
+
+
+
+
+## Data curation
+
+We performed data curation by filtering out samples with low epidermis signature genes (FLG, LORICRIN), total sequencing depth, correlation coefficient with the group.
+
+### calc QC metrics
+```{r out.width='100%'}
+# sequencing depth
+
+epidermis <- 
+  se[c("FLG", "LORICRIN"),] %>% 
+  as_tibble() %>% 
+  pivot_wider(names_from = feature, values_from = counts) %>% 
+  left_join(counts_sum, by = "sample")
+
+# correlation
+cor <- 
+  tibble(
+    tissue_type  = se_scale$skin_type %>% unique,
+    se_skin_type = map(tissue_type, ~ se_scale[,se_scale$skin_type == .]),
+    cor = map(se_skin_type, ~ .x %>% assay(2) %>% cor(method = "spearman")),
+    # cor_p = map(cor, ~ .x %>% corrplot::corrplot(mar = c(0,0,0,0), type = "upper", cex = 8))
+    )
+
+S_h_q <- # high quality sample
+  se[c("LORICRIN", "FLG"),] %>% 
+  as_tibble() %>% 
+  pivot_wider(names_from = feature, values_from = counts) %>% 
+  left_join(counts_sum) %>% 
+  filter(LORICRIN > 10, 
+         FLG > 10) %>% 
+         # counts_sum > 2000) %>% 
+  pull(sample_name)
+```
+
+```{r NL}
+corrplot::corrplot(cor$cor[[1]], mar = c(0,0,0,0), type = "upper", tl.cex = 0.4)
+```
+
+```{r LS}
+corrplot::corrplot(cor$cor[[2]], mar = c(0,0,0,0), type = "upper", tl.cex = 0.4)
+```
+
+```{r HC}
+corrplot::corrplot(cor$cor[[3]], mar = c(0,0,0,0), type = "upper", tl.cex = 0.4)
+```
+
+```{r filter}
+se_rmS_scale <-
+  se[, S_h_q] %>%
+  keep_abundant(minimum_proportion = 0,
+                minimum_counts = 5) %>% # keep > 1 per million
+  scale_abundance(method = "TMMwsp")
+```
+
+```{r before and after scaling, eval=FALSE}
+friendly_cols <- dittoSeq::dittoColors()
+custom_theme <-
+  list(
+    scale_fill_manual(values = friendly_cols),
+    scale_color_manual(values = friendly_cols),
+    theme_bw() +
+      theme(
+        panel.border = element_blank(),
+        axis.line = element_line(),
+        panel.grid.major = element_line(size = 0.2),
+        panel.grid.minor = element_line(size = 0.1),
+        text = element_text(size = 12),
+        legend.position = "bottom",
+        strip.background = element_blank(),
+        axis.title.x = element_text(margin = margin(t = 10, r = 10, b = 10, l = 10)),
+        axis.title.y = element_text(margin = margin(t = 10, r = 10, b = 10, l = 10)),
+        axis.text.x = element_text(angle = 30, hjust = 1, vjust = 1)
+      )
+  )
+
+se_rmS_scale %>%
+  # Reshaping
+  pivot_longer(cols = c("counts", "counts_scaled"), names_to = "source", values_to = "abundance") %>%
+
+  # Plotting
+  ggplot(aes(x = abundance + 1, color = sample_name)) +
+  geom_density() +
+  facet_wrap(~source) +
+  scale_x_log10() +
+  custom_theme
+```
+
+```{r heatmap, eval=FALSE}
+heatmap_data_m <-
+  scale(assay(se_rmS_scale, 2) %>% t() %>% log1p(), 
+        center = TRUE, scale = TRUE) %>% t()
+
+sample_site_color <- 
+  colData(se_rmS_scale) %>% as_tibble() %>% pull(biopsy_area) %>% unique()
+
+color <- RColorBrewer::brewer.pal(length(sample_site_color), "Pastel2")
+names(color) <- sample_site_color
+
+heatmap_annotation <- 
+  HeatmapAnnotation(
+    `Tissue type` = colData(se_rmS_scale) %>% as_tibble() %>% pull(skin_type), 
+    `Anatomic region` = colData(se_rmS_scale) %>% as_tibble() %>% pull(biopsy_area),
+    col = list(`Tissue type` = pca_color),
+               # `Anatomic region` = color),
+    annotation_legend_param = list(`Tissue type` = list(nrow = 1, 
+                                                        title_gp = gpar(fontsize = 16),
+                                                        labels_gp = gpar(fontsize = 16)),
+                                   `Anatomic region` = list(nrow = 1,
+                                                            title_gp = gpar(fontsize = 16),
+                                                            labels_gp = gpar(fontsize = 16))
+                                   ))
+
+heatmap <- ComplexHeatmap::Heatmap(heatmap_data_m,
+                        name = "gene expression",
+                        column_dend_reorder = TRUE,
+                        # clustering_method_columns = "complete",
+                        show_column_names = FALSE,
+                        show_row_names = FALSE,
+                        show_row_dend = FALSE,
+                        # row_names_gp = gpar(fontsize = min(10, 800 * 1.5 / dim(heatmap_data_m)[1])),
+                        top_annotation = heatmap_annotation,
+                        heatmap_legend_param = list(
+                          title_gp = gpar(fontsize = 16),
+                          labels_gp = gpar(fontsize = 14)
+                          ))
+
+jpeg("../data/figure/heatmap_allg.jpeg",
+     width = 480*2, height = 480*1.3)
+draw(heatmap, heatmap_legend_side = "right",
+     annotation_legend_side = "top", merge_legend = FALSE)
+dev.off()
+
+```
+## Epidermal differentiation coomplex (EDC) genes
+
+We detected expression of 2310 genes. We performed quality control based on a 4-point systematic data quality evaluation.
+
+```{r filter out low expr genes}
+se_x <- # se expressed
+  se[rowMeans(assay(se) > 0) > 0.2,]
+```
+
+```{r total counts and sensitivity}
+qc_total_counts <- se_x %>% assay() %>% colSums()
+qc_sensitivity_g_0 <- colSums(assay(se_x) > 0) # no. of detected genes int. > 0 
+qc_sensitivity_g_1 <- colSums(assay(se_x) > 1) # no. of detected genes int. > 1 
+qc_sensitivity_g_2 <- colSums(assay(se_x) > 2) # no. of detected genes int. > 2
+```
+
+```{r MT genes}
+g_MT <- rownames(se_x) %>% grep("MT-", ., value = T)
+qc_MT_ratio <- (assay(se_x)[g_MT,] %>% colSums())*100/qc_total_counts
+qc_MT_ratio15 <- qc_MT_ratio < 15
+```
+
+```{r hair genes}
+g_hair <- c("KRTAP1-5",
+            "KRTAP3-2",
+            "KRTAP3-3",
+            "KRTAP4-1",
+            "KRTAP11-1")
+qc_hair_1percent <- (colSums(assay(se_x[g_hair,])) / qc_total_counts) > .01 
+```
+
+```{r EDC genes}
+g_EDC <- c("FLG", "FLG2",
+           "LORICRIN", "LCE1A", 
+           "S100A8","S100A7",
+           "SPRR2E","SPRR1B",
+           "IVL")
+qc_EDC_5percent <- (colSums(assay(se_x[g_EDC,])) / qc_total_counts) > .05 # percentage of EDC within all counts
+qc_EDC_count100 <- colSums(assay(se_x[g_EDC,])) > 100
+```
+
+```{r construct new se}
+se_qc <- se_x
+se_qc$qc_hair_1percent <- qc_hair_1percent
+se_qc$qc_MT_ratio15 <- qc_MT_ratio15
+se_qc$qc_EDC_5percent <- qc_EDC_5percent
+se_qc$qc_EDC_count100 <- qc_EDC_count100
+se_qc$qc_sensitivity_200 <- qc_sensitivity_g_1 > 200
+se_qc$qc_0_4 <- qc_EDC_5percent + qc_EDC_count100 + (qc_sensitivity_g_1 > 200) + qc_MT_ratio15
+se_qc$qc_coverage <- ifelse(se_qc$counts_sum < 100000, "low", "high")
+
+
+```
+
+After QC, we detected expression of `r nrow(se_qc[,se_qc$qc_0_4>2])` genes, with > 1 count in at least 80% of samples. After a 4-point scheme quality filtering, We kept `r ncol(se_qc[,se_qc$qc_0_4>2])` samples for further analysis.
+
+
+# heatmap non-normalized
+```{r}
+# heatmap_before_non_normalized <- 
+#   se_qc %>% 
+#   plot_heatmap_from_se(assay_no = 1)
+# 
+# draw(heatmap_before_non_normalized, heatmap_legend_side = "right",
+#      annotation_legend_side = "top", merge_legend = FALSE)
+```
+
+## after filtering MT-genes
+```{r}
+se_qc[rownames(se_qc) %>% str_detect("MT-"),se_qc$qc_0_3 > 1] %>% assay() %>% colSums()
+```
+
+
+# heatmap new se
+```{r}
+TMM <- 
+  se_qc[,se_qc$qc_0_4 > 2] %>% 
+  scale_abundance(method = "TMM") %>% 
+  plot_heatmap_from_se()
+
+TMMwsp <- 
+  se_qc[,se_qc$qc_0_4 > 2] %>% 
+  scale_abundance(method = "TMMwsp") %>% 
+  plot_heatmap_from_se()
+
+
+draw(TMM, heatmap_legend_side = "right",
+     annotation_legend_side = "top", merge_legend = FALSE)
+```
+
+
+```{r}
+draw(TMMwsp, heatmap_legend_side = "right",
+     annotation_legend_side = "top", merge_legend = FALSE)
+```
+
+
+
+```{r deseq}
+
+se_ad_q34 <- 
+  se_qc[, (se_qc$qc_0_4 > 2) & (se_qc$group == "AD")]
+se_ad_q34$skin_type <- se_ad_q34$skin_type %>% droplevels() # remove level HC
+
+
+assays(se_ad_q34)$TMMwsp <- se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2)
+assays(se_ad_q34)$RLE <- se_ad_q34 %>% scale_abundance(method = "RLE") %>% assay(2)
+assays(se_ad_q34)$VST <- se_ad_q34 %>% DESeqDataSet(design = ~ skin_type + subject_id) %>% vst(blind = T) %>% assay()
+
+assays(se_ad_q34)$rlog <- se_ad_q34 %>% DESeqDataSet(design = ~ skin_type + subject_id) %>% rlog(blind = T) %>% assay()
+
+norm_F <- 
+  matrix(
+    rep(colSums(assay(se_ad_q34, 1)[rownames(se_ad_q34) %>% grep("MT-", ., value = T),]), 
+        times = nrow(se_ad_q34)), nrow = nrow(se_ad_q34), 
+    byrow = T)
+assays(se_ad_q34)$MT_norm <- log(1000000 * (assay(se_ad_q34,1) + 1) / norm_F) # maybe modify it
+
+dge_ad_qc34 <- 
+  se_ad_q34 %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "RLE",
+                              scaling_method = "RLE") %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "TMM",
+                              scaling_method = "TMM") %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "TMMwsp",
+                              scaling_method = "TMMwsp") %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "DESeq2",
+                              method = "DESeq2") %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "limma",
+                              method = "limma_voom")
+```
+
+
+## limma-voom
+```{r}
+se_qc_nMT <- 
+  se_ad_q34[!rownames(se_ad_q34) %>% str_detect("MT-"),]
+  #       # se_ad_q34$visit == "01" & 
+  #         se_ad_q34$skin_type %in% c("LS", "NL") & 
+  #         se_ad_q34$qc_0_4 > 2] %>% 
+  # scale_abundance()
+
+# se_qc_nMT$skin_type <- se_qc_nMT$skin_type %>% droplevels()
+
+# V1 LSvsNL ----------------
+design <- model.matrix(
+  ~  se_qc_nMT$skin_type + se_qc_nMT$subject_id
+)
+  
+v <- voomWithQualityWeights(se_qc_nMT %>% assay(2), design, plot = T)
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+topTable(fit, number = Inf, coef = 1) %>% as_tibble(rownames = "Gene_name") %>% 
+  readr::write_csv("../data/deg_voomWithQualityWeights.csv")
+
+# V1 LSvsHC -----------------
+
+
+> assayNames(se_qc_nMT)
+[1] "counts"  "TMMwsp"  "RLE"    
+[4] "VST"     "rlog"    "MT_norm"
+
+## write out data
+se_qc_nMT %>% assay(2) %>% as_tibble() %>% 
+  readr::write_csv("../data/counts_TMMwsp.csv") 
+se_qc_nMT %>% assay(4) %>% as_tibble() %>% 
+  readr::write_csv("../data/counts_VST.csv")
+se_qc_nMT %>% assay(5) %>% as_tibble() %>% 
+  readr::write_csv("../data/counts_rlog.csv")
+se_qc_nMT %>% assay(6) %>% as_tibble() %>% 
+  readr::write_csv("../data/counts_MTnorm.csv")
+
+tibble(gene_name = rownames(se_qc_nMT)) %>% readr::write_csv("../data/gene_name.csv")
+colData(se_qc_nMT) %>% as_tibble() %>% readr::write_csv("../data/metadataNew.csv")
+```
+
+```{r}
+se_ad_q34[top20, se_ad_q34$visit == "01" & 
+          se_ad_q34$skin_type %in% c("LS", "NL") & 
+          se_ad_q34$qc_0_4 > 2] %>% scale_abundance() %>% as_tibble() %>% 
+  ggplot(aes(skin_type, TMMwsp)) + geom_point() + geom_boxplot() +
+  facet_wrap("feature", scales = "free")
+
+se_ad_q34[top20, se_ad_q34$visit == "01" & 
+          se_ad_q34$skin_type %in% c("LS", "NL") & 
+          se_ad_q34$qc_0_4 > 2] %>% scale_abundance() %>% as_tibble() %>%   ggplot(aes(skin_type, RLE)) + geom_point() + geom_boxplot() +
+    facet_wrap("feature", scales = "free")
+
+se_ad_q34[top20, 
+          se_ad_q34$skin_type %in% c("LS", "NL") & 
+          se_ad_q34$qc_0_4 > 2] %>% scale_abundance() %>% as_tibble() %>%   ggplot(aes(skin_type, MT_norm)) + geom_point() + geom_boxplot() +
+  facet_wrap("feature", scales = "free")
+
+```
+
+
+
+
+
+```{r}
+dge_ad_qc34_result <- 
+  dge_ad_qc34 %>% pivot_transcript() %>% 
+  select(feature, 
+         RLElogFC, RLEPValue, RLEFDR, 
+         TMMlogFC, TMMPValue, TMMFDR, 
+         TMMwsplogFC, TMMwspPValue, TMMwspFDR, 
+         DESeq2log2FoldChange, DESeq2pvalue, DESeq2padj, 
+         limmalogFC, limmaP.Value, limmaadj.P.Val) %>% 
+  pivot_longer(cols = -feature, names_to = "parameter") %>% 
+  mutate(test = parameter %>% str_extract("RLE|TMMwsp|TMM|DESeq2|limma")) %>% 
+  mutate(parameter = case_when(
+    parameter %in% c("RLElogFC", "TMMlogFC", "TMMwsplogFC", "DESeq2log2FoldChange", "limmalogFC") ~ "logFC",
+    parameter %in% c("RLEPValue", "TMMPValue", "TMMwspPValue", "DESeq2pvalue", "limmaP.Value") ~ "p",
+    parameter %in% c("RLEFDR", "TMMFDR", "TMMwspFDR", "DESeq2padj", "limmaadj.P.Val") ~ "padj_FDR"
+  )) %>% 
+  pivot_wider(names_from = parameter)
+  # group_by(test) %>% summarise(n = n())
+
+dge_ad_qc34_result %>% arrange(test, -logFC) %>% 
+  openxlsx::write.xlsx("../_tmp/deg_different_test.xlsx")
+```
+
+
+
+## ZINB-WaVE
+
+```{r }
+library(zinbwave)
+
+se_zinbwave <- se_qc[,se_qc$qc_0_4 > 2]
+
+# vars <- assay(se_zinbwave) %>% log1p() %>% rowVars()
+# names(vars) <- rownames(se_zinbwave)
+# vars <- sort(vars, decreasing = T)
+# head(vars, 20)
+# 
+se_zinbwave <- se_zinbwave[,]
+
+zinbwave <- zinbwave(se_zinbwave, K=2, epsilon=1000)
+
+# coverage
+W <- reducedDim(zinbwave)
+data.frame(W, skin_type = colData(se_zinbwave)$skin_type,
+              coverage = colData(se_zinbwave)$qc_coverage
+           ) %>%
+    ggplot(aes(W1, W2, 
+               colour=skin_type, shape=coverage)) + 
+               geom_point() + 
+    scale_color_brewer(type = "qual", palette = "Set1") +
+  theme_classic()
+```
+
+
+```{r add sample level}
+zinbwave_cov <- zinbwave(se_zinbwave, K=2, 
+                         X = "~qc_coverage",
+                         epsilon=1000,
+                         observationalWeights = TRUE)
+
+# coverage
+W <- reducedDim(zinbwave_cov)
+data.frame(W, skin_type = colData(se_zinbwave)$skin_type,
+              coverage = colData(se_zinbwave)$qc_coverage
+           ) %>%
+    ggplot(aes(W1, W2, 
+               colour=skin_type, shape=coverage)) + 
+               geom_point() + 
+    scale_color_brewer(type = "qual", palette = "Set1") +
+  theme_classic()
+```
+
+```{r add gene level}
+library(biomaRt)
+mart <- useMart("ensembl")
+mart <- useDataset("hsapiens_gene_ensembl", mart = mart)
+bm <- getBM(attributes=c('hgnc_symbol', 'start_position',
+                         'end_position', 'percentage_gene_gc_content'),
+            filters = 'hgnc_symbol',
+            values = rownames(se_zinbwave),
+            mart = mart)
+
+bm$length <- bm$end_position - bm$start_position
+len <- tapply(bm$length, bm$hgnc_symbol, mean)
+len <- len[rownames(se_zinbwave)]
+gcc <- tapply(bm$percentage_gene_gc_content, bm$hgnc_symbol, mean)
+gcc <- gcc[rownames(se_zinbwave)]
+
+rowData(se_zinbwave) <- data.frame(gccontent = gcc, length = len)
+
+se_zinbwave_gcc <- zinbwave(se_zinbwave, K=2, V="~gccontent + log(length)", epsilon=1000)
+```
+
+```{r}
+set.seed(0714)
+
+library(Rtsne)
+W <- reducedDim(zinbwave_cov)
+tsne_data <- Rtsne(W, pca = FALSE, perplexity=15, max_iter=5000)
+
+data.frame(Dim1=tsne_data$Y[,1], Dim2=tsne_data$Y[,2], 
+           skin_type=colData(zinbwave_cov)$skin_type,
+           coverage=colData(zinbwave_cov)$qc_coverage) %>%
+    ggplot(aes(Dim1, Dim2, colour=skin_type, shape=coverage)) + geom_point() + 
+    scale_color_brewer(type = "qual", palette = "Set1") + theme_classic()
+```
+
+### differential expression analysis
+```{r}
+weights <- assay(zinbwave_cov, "weights")
+```
+
+

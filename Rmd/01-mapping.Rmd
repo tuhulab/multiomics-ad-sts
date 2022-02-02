@@ -1,5 +1,5 @@
 ---
-title: "Skin tape striping data analysis"
+title: "Skin tape striping - mapping"
 author: "Tu Hu"
 date: "12/13/2021"
 output: html_document
@@ -9,6 +9,12 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 pacman::p_load("dplyr", "stringr", "purrr", "tidyr", "ggplot2")
 ```
+
+enabled by ultra-affordable bulk RNA barcoding and sequencing (BRB-seq).
+
+- reduced bioinfomratics resources
+
+- reduced cost
 
 ## Mapping
 
@@ -76,7 +82,7 @@ total_read / nrow(sample)
 
 ### Construct reference genome
 
-First, download the latest reference genome from Ensembl
+First, download the latest reference genome from Ensembl.
 
 ```{bash download ref genome from ensemble}
 mkdir -p ../data/reference
@@ -85,10 +91,6 @@ gzip -d ../data/reference/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
 wget -P ../data/reference ftp://ftp.ensembl.org/pub/release-105/gtf/homo_sapiens/Homo_sapiens.GRCh38.105.gtf.gz
 gzip -d ../data/reference/Homo_sapiens.GRCh38.105.gtf.gz
 ```
-
-```{bash}
-```
-
 
 ```{bash}
 module load jre/1.8.0 brbseqtools/1.6.0
@@ -101,26 +103,44 @@ cd ../data
 STAR --runMode genomeGenerate --genomeDir STAR_Index/ --genomeFastaFiles reference/Homo_sapiens.GRCh38.dna.primary_assembly.fa --sjdbGTFfile reference/Homo_sapiens.GRCh38.105.gtf --runThreadN 30
 ```
 
+I first merge four lanes into one fastq file.
+
+```{bash merge fastq}
+cd /home/projects/ku_00015/people/tuhu/multiomics-ad-sts/data/fastq
+mkdir -p ../fastq_merged
+for i in {1..5}
+do
+   echo forward ${i}
+   cat ${i}_S${i}*_R1_001.fastq.gz > ../fastq_merged/${i}_R1.fastq.gz
+   
+   echo reverse ${i}
+   cat ${i}_S${i}*_R2_001.fastq.gz > ../fastq_merged/${i}_R2.fastq.gz
+done
+```
+
 ```{bash STAR alignment reverse read}
-module load gcc/9.4.0 star/2.7.9a parallel/20210722
+module load gcc/9.4.0 star/2.7.9a 
 cd /home/projects/ku_00015/people/tuhu/multiomics-ad-sts/data
-fn_path=../_tmp/fn.txt
-for i in $(cat ${fn_path}); do STAR --genomeDir STAR_Index/ \
+mkdir -p BAM_merged
+for i in {1..5}; do STAR --genomeDir STAR_Index/ \
 --runMode alignReads \
 --outFilterMultimapNmax 1 \
 --readFilesCommand zcat \
 --outSAMtype BAM Unsorted \
---outFileNamePrefix BAM/$i. \
---readFilesIn fastq/$i\_R2_001.fastq.gz \
+--outFileNamePrefix BAM_merged/${i} \
+--readFilesIn fastq_merged/${i}_R2.fastq.gz \
 --runThreadN 20 ; done
 ```
 
 ```{bash use forward read to map samples}
-cd ../data
-module load jre/1.8.0 brbseqtools/1.6.0 parallel/20210722
-create_brbmatrix(){
-brbseqtools CreateDGEMatrix -f fastq/$1_R1_001.fastq.gz -b BAM/$1.Aligned.out.bam -c ../_tmp/batch_info_$2.txt -gtf reference/Homo_sapiens.GRCh38.105.gtf -p B???????????????????? -o $1
-}
-export -f create_brbmatrix
-parallel --link -a ../_tmp/fn.txt -a ../_tmp/batch.txt create_brbmatrix
+cd /home/projects/ku_00015/people/tuhu/multiomics-ad-sts/data
+mkdir -p brbmatrix
+module load jre/1.8.0 brbseqtools/1.6.0 
+for i in {1..5}; do brbseqtools CreateDGEMatrix \
+-f fastq_merged/${i}_R1.fastq.gz \
+-b BAM_merged/${i}Aligned.out.bam \
+-c ../_tmp/batch_info_${i}.txt \
+-gtf reference/Homo_sapiens.GRCh38.105.gtf \
+-p B???????????????????? \
+-o brbmatrix/${i} ; done
 ```
