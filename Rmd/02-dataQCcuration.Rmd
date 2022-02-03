@@ -496,25 +496,21 @@ After QC, we detected expression of `r nrow(se_qc[,se_qc$qc_0_4>2])` genes, with
 
 
 ```{r deseq}
-
 se_ad_q34 <- 
   se_qc[, (se_qc$qc_0_4 > 2) & (se_qc$group == "AD")]
 se_ad_q34$skin_type <- se_ad_q34$skin_type %>% droplevels() # remove level HC
 
 
-assays(se_ad_q34)$TMMwsp <- se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2)
-assays(se_ad_q34)$RLE <- se_ad_q34 %>% scale_abundance(method = "RLE") %>% assay(2)
-assays(se_ad_q34)$VST <- se_ad_q34 %>% DESeqDataSet(design = ~ skin_type + subject_id) %>% vst(blind = T) %>% assay()
-
-assays(se_ad_q34)$rlog <- se_ad_q34 %>% DESeqDataSet(design = ~ skin_type + subject_id) %>% rlog(blind = T) %>% assay()
-
-norm_F <- 
-  matrix(
-    rep(colSums(assay(se_ad_q34, 1)[rownames(se_ad_q34) %>% grep("MT-", ., value = T),]), 
-        times = nrow(se_ad_q34)), nrow = nrow(se_ad_q34), 
-    byrow = T)
-assays(se_ad_q34)$MT_norm <- log(1000000 * (assay(se_ad_q34,1) + 1) / norm_F) # maybe modify it
-
+# assays(se_ad_q34)$TMMwsp <- se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2)
+# assays(se_ad_q34)$RLE <- se_ad_q34 %>% scale_abundance(method = "RLE") %>% assay(2)
+# assays(se_ad_q34)$VST <- se_ad_q34 %>% DESeqDataSet(design = ~ skin_type + subject_id) %>% vst(blind = T) %>% assay()
+# assays(se_ad_q34)$rlog <- se_ad_q34 %>% DESeqDataSet(design = ~ skin_type + subject_id) %>% rlog(blind = T) %>% assay()
+# norm_F <- 
+#   matrix(
+#     rep(colSums(assay(se_ad_q34, 1)[rownames(se_ad_q34) %>% grep("MT-", ., value = T),]), 
+#         times = nrow(se_ad_q34)), nrow = nrow(se_ad_q34), 
+#     byrow = T)
+# assays(se_ad_q34)$MT_norm <- log(1000000 * (assay(se_ad_q34,1) + 1) / norm_F) # maybe modify it
 dge_ad_qc34 <- 
   se_ad_q34 %>% 
   test_differential_abundance(~ skin_type + subject_id, 
@@ -534,28 +530,114 @@ dge_ad_qc34 <-
                               method = "limma_voom")
 ```
 
+```{r}
+dge_ad_qc34_result <- 
+  dge_ad_qc34 %>% pivot_transcript() %>% 
+  select(feature, 
+         RLElogFC, RLEPValue, RLEFDR, 
+         TMMlogFC, TMMPValue, TMMFDR, 
+         TMMwsplogFC, TMMwspPValue, TMMwspFDR, 
+         DESeq2log2FoldChange, DESeq2pvalue, DESeq2padj, 
+         limmalogFC, limmaP.Value, limmaadj.P.Val) %>% 
+  pivot_longer(cols = -feature, names_to = "parameter") %>% 
+  mutate(test = parameter %>% str_extract("RLE|TMMwsp|TMM|DESeq2|limma")) %>% 
+  mutate(parameter = case_when(
+    parameter %in% c("RLElogFC", "TMMlogFC", "TMMwsplogFC", "DESeq2log2FoldChange", "limmalogFC") ~ "logFC",
+    parameter %in% c("RLEPValue", "TMMPValue", "TMMwspPValue", "DESeq2pvalue", "limmaP.Value") ~ "p",
+    parameter %in% c("RLEFDR", "TMMFDR", "TMMwspFDR", "DESeq2padj", "limmaadj.P.Val") ~ "padj_FDR"
+  )) %>% 
+  pivot_wider(names_from = parameter) %>% 
+  mutate(direction = ifelse(logFC > 0, "up", "down"))
+```
+
+
+
+```{r reference data}
+reference <-
+  readr::read_csv("../../multiomics-ad-phd/data/supplementary/table_s2.csv")
+```
+
+
+```{r calculate accuracy}
+calc_accuracy <-
+  function(DE, DE_ref = reference){
+    DE_ref_up <- DE_ref %>% filter(contrast == "LSvsNL", direction == "up") %>% pull(gene_name)
+    DE_ref_down <- DE_ref %>% filter(contrast == "LSvsNL", direction == "down") %>% pull(gene_name)
+    
+    DE_up <- DE$data[DE$direction == "up"][[1]] %>% pull(feature)
+    DE_down <- DE$data[DE$direction == "down"][[1]] %>% pull(feature)
+    
+    DE_up_a <- DE_up %in% (DE_ref_up)
+    DE_down_a <- DE_down %in% (DE_ref_down)
+    
+    DE_w_total_a <- length(DE_up) * mean(DE_up_a) / (length(DE_up) + length(DE_down)) + length(DE_down) * mean(DE_down_a) / (length(DE_up) + length(DE_down))
+    
+    result <- c("up" = sum(DE_up_a), "down" = sum(DE_down_a), "total" = DE_w_total_a)
+    return(result)
+    }
+
+
+RLE <- 
+  dge_ad_qc34_result %>% filter(test == "RLE") %>% filter(abs(logFC) > 1, padj_FDR < .05) %>% 
+  group_by(direction) %>% nest()
+calc_accuracy(RLE)
+
+
+TMM <- 
+  dge_ad_qc34_result %>% filter(test == "TMM") %>% filter(abs(logFC) > 1, p < .05) %>% 
+  group_by(direction) %>% nest()
+calc_accuracy(TMM)
+
+
+TMMwsp <- 
+  dge_ad_qc34_result %>% filter(test == "TMMwsp") %>% filter(abs(logFC) > 1, p < .05) %>% 
+  group_by(direction) %>% nest()
+calc_accuracy(TMMwsp)
+
+limma <-
+  dge_ad_qc34_result %>% filter(test == "limma") %>% filter(abs(logFC) > 1, p < .05) %>% 
+  group_by(direction) %>% nest()
+calc_accuracy(limma)
+
+
+DESeq2 <-
+  dge_ad_qc34_result %>% filter(test == "DESeq2") %>% filter(abs(logFC) > 1, padj_FDR < .05) %>% 
+  group_by(direction) %>% nest()
+calc_accuracy(DESeq2)
+
+```
+
+
+
+
 
 ## limma-voom
 ```{r}
-se_qc_nMT <- 
-  se_ad_q34[!rownames(se_ad_q34) %>% str_detect("MT-"),]
-  #       # se_ad_q34$visit == "01" & 
-  #         se_ad_q34$skin_type %in% c("LS", "NL") & 
-  #         se_ad_q34$qc_0_4 > 2] %>% 
-  # scale_abundance()
 
-# se_qc_nMT$skin_type <- se_qc_nMT$skin_type %>% droplevels()
+se_ad_q34
 
 # V1 LSvsNL ----------------
 design <- model.matrix(
-  ~  se_qc_nMT$skin_type + se_qc_nMT$subject_id
+  ~  se_ad_q34$skin_type + se_ad_q34$subject_id
 )
   
-v <- voomWithQualityWeights(se_qc_nMT %>% assay(2), design, plot = T)
+v <- voomWithQualityWeights(se_ad_q34 %>% assay(1), design, plot = T)
 fit <- lmFit(v, design)
 fit <- eBayes(fit)
-topTable(fit, number = Inf, coef = 1) %>% as_tibble(rownames = "Gene_name") %>% 
-  readr::write_csv("../data/deg_voomWithQualityWeights.csv")
+
+voom_quality <-
+  topTable(fit, number = Inf, coef = 2) %>% as_tibble(rownames = "feature") %>% 
+  filter(abs(logFC) > 1, P.Value < .05) %>% 
+  mutate(direction = ifelse(logFC < 0, "down", "up")) %>% 
+  group_by(direction) %>% nest
+
+voom_quality <-
+  topTable(fit, number = Inf, coef = 2) %>% as_tibble(rownames = "feature") %>% 
+  filter(abs(logFC) > 1, adj.P.Val < .05) %>% 
+  mutate(direction = ifelse(logFC < 0, "down", "up")) %>% 
+  group_by(direction) %>% nest
+
+calc_accuracy(voom_quality)
 
 # V1 LSvsHC -----------------
 
@@ -585,22 +667,7 @@ se_ad_q34[top20,
 
 
 ```{r}
-dge_ad_qc34_result <- 
-  dge_ad_qc34 %>% pivot_transcript() %>% 
-  select(feature, 
-         RLElogFC, RLEPValue, RLEFDR, 
-         TMMlogFC, TMMPValue, TMMFDR, 
-         TMMwsplogFC, TMMwspPValue, TMMwspFDR, 
-         DESeq2log2FoldChange, DESeq2pvalue, DESeq2padj, 
-         limmalogFC, limmaP.Value, limmaadj.P.Val) %>% 
-  pivot_longer(cols = -feature, names_to = "parameter") %>% 
-  mutate(test = parameter %>% str_extract("RLE|TMMwsp|TMM|DESeq2|limma")) %>% 
-  mutate(parameter = case_when(
-    parameter %in% c("RLElogFC", "TMMlogFC", "TMMwsplogFC", "DESeq2log2FoldChange", "limmalogFC") ~ "logFC",
-    parameter %in% c("RLEPValue", "TMMPValue", "TMMwspPValue", "DESeq2pvalue", "limmaP.Value") ~ "p",
-    parameter %in% c("RLEFDR", "TMMFDR", "TMMwspFDR", "DESeq2padj", "limmaadj.P.Val") ~ "padj_FDR"
-  )) %>% 
-  pivot_wider(names_from = parameter)
+
   # group_by(test) %>% summarise(n = n())
 
 dge_ad_qc34_result %>% arrange(test, -logFC) %>% 
@@ -616,7 +683,7 @@ library(zinbwave)
 
 # se_qc <- readr::read_rds("../data/se_qc.rds")
 
-se_zinbwave <- se_qc[,se_qc$qc_0_4 > 2] # only keep high quality samples
+se_zinbwave <- se_qc[, se_qc$qc_0_4 > 2] # only keep high quality samples
 
 # vars <- assay(se_zinbwave) %>% log1p() %>% rowVars()
 # names(vars) <- rownames(se_zinbwave)
@@ -693,34 +760,27 @@ data.frame(Dim1=tsne_data$Y[,1], Dim2=tsne_data$Y[,2],
 
 ### differential expression analysis
 ```{r}
-zinbwave_cov <- zinbwave(se_zinbwave, K=2, 
-                         X = "~qc_0_4",
+zinbwave_cov <- zinbwave(se_ad_q34, K=2, 
+                         X = "~ qc_0_4",
                          epsilon=1e12,
                          observationalWeights = TRUE)
 
-# coverage
-# W <- reducedDim(zinbwave_cov)
-data.frame(W, skin_type = colData(se_zinbwave)$skin_type,
-              coverage = colData(se_zinbwave)$qc_coverage
-           ) %>%
-    ggplot(aes(W1, W2, 
-               colour=skin_type, shape=coverage)) + 
-               geom_point() + 
-    scale_color_brewer(type = "qual", palette = "Set1") +
-  theme_classic()
-
 weights <- assay(zinbwave_cov, "weights")
-library(edgeR)
 
-dge <- DGEList(assay(se_zinbwave))
+
+dge <- DGEList(assay(se_ad_q34))
 dge <- calcNormFactors(dge)
 
-design <- model.matrix(~skin_type, data = colData(se_zinbwave))
+design <- model.matrix(~skin_type, data = colData(se_ad_q34))
 dge$weights <- weights
 dge <- estimateDisp(dge, design)
 fit <- glmFit(dge, design)
 lrt <- glmWeightedF(fit, coef = "skin_typeLS")
-topTags(lrt, n = Inf) %>% data.frame() %>% arrange(-logFC)
+
+topTags(lrt, n = Inf) %>% data.frame() %>% as.tibble(rownames = "feature") %>% 
+  filter(PValue < .05, abs(logFC) > 1) %>% mutate(direction = ifelse(logFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest() %>% 
+  calc_accuracy()
 ```
 
 ```{r deseq2}
@@ -729,7 +789,6 @@ dds <- DESeqDataSet(zinbwave_cov, design = ~ skin_type)
 dds <- DESeq(dds, sfType = "poscounts", useT = T, minmu = 1e-6)
 res <- lfcShrink(dds, coef = "skin_type_LS_vs_HC")
 ```
-
 
 ```{r}
 se_zinbwave["FAM126B",] %>% 
@@ -741,21 +800,27 @@ se_zinbwave["FAM126B",] %>%
 
 ```{r}
 library(NOISeq)
-mydata <- readData(data = se_zinbwave %>% scale_abundance(method = "TMMwsp") %>% assay(2),
-                 factors = colData(se_zinbwave)
+mydata <- readData(data = se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2),
+                 factors = colData(se_ad_q34)
 )
 
 mynoiseq <-
   noiseq(mydata, k=0.5, norm = "n",
          factor = "skin_type", lc = 1,
-         conditions = c("LS", "HC"))
+         conditions = c("LS", "NL"))
          # replicates = "biological")
 ```
 
 ```{r}
-mynoiseq@results[[1]] %>% as_tibble(rownames = "gene_name") %>% 
-  filter(!gene_name %>% str_detect("MT-"), M > 0) %>% 
-  arrange(-ranking)
+noiseq_res <- 
+  mynoiseq@results[[1]] %>% as_tibble(rownames = "feature") %>% 
+  mutate(abs_ranking = abs(ranking),
+         direction = ifelse(M < 0, "up", "down")) %>% 
+  slice_max(abs_ranking, prop = 0.05)
+
+noiseq_res %>% 
+  group_by(direction) %>% nest %>% 
+  calc_accuracy()
 ```
 
 
