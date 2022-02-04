@@ -1,5 +1,5 @@
 ---
-title: "Skin tape striping - Different normalization method"
+title: "Skin tape striping - Transformation and DE benchmark"
 author: "Tu Hu"
 date: "1/18/2022"
 output: html_document
@@ -7,15 +7,47 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load("tidybulk")
 ```
 
 
-## Differential gene expression analysis
+## Load data
 
-### Baseline difference
+```{r se}
+se_qc <- readr::read_rds("../data/se_qc.rds") # se w. qc information
+
+se_ad_q34 <- 
+  se_qc[, (se_qc$qc_0_4 > 2) & (se_qc$group == "AD")]
+se_ad_q34$skin_type <- se_ad_q34$skin_type %>% droplevels() # remove level HC
+
+```
+
+```{r reference data}
+reference <-
+  readr::read_csv("../../multiomics-ad-phd/data/supplementary/table_s2.csv")
+```
 
 
-
+## DE 
+```{r }
+dge_ad_qc34 <- 
+  se_ad_q34 %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "RLE",
+                              scaling_method = "RLE") %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "TMM",
+                              scaling_method = "TMM") %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "TMMwsp",
+                              scaling_method = "TMMwsp") %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "DESeq2",
+                              method = "DESeq2") %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "limma",
+                              method = "limma_voom")
+```
 
 
 

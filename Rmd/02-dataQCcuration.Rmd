@@ -621,10 +621,26 @@ design <- model.matrix(
   ~  se_ad_q34$skin_type + se_ad_q34$subject_id
 )
   
+
+v <- voom(se_ad_q34 %>% assay(1), design, plot = T)
+fit <- lmFit(v, design)
+fit <- eBayes(fit)
+voom <-
+  topTable(fit, number = Inf, coef = 2) %>% as_tibble(rownames = "feature") %>% 
+  filter(abs(logFC) > 1, P.Value < .05) %>% 
+  mutate(direction = ifelse(logFC < 0, "down", "up")) %>% 
+  group_by(direction) %>% nest
+
+calc_accuracy(voom)
+
+# V1 LSvsHC -----------------
+
+```
+
+```{r}
 v <- voomWithQualityWeights(se_ad_q34 %>% assay(1), design, plot = T)
 fit <- lmFit(v, design)
 fit <- eBayes(fit)
-
 voom_quality <-
   topTable(fit, number = Inf, coef = 2) %>% as_tibble(rownames = "feature") %>% 
   filter(abs(logFC) > 1, P.Value < .05) %>% 
@@ -638,10 +654,10 @@ voom_quality <-
   group_by(direction) %>% nest
 
 calc_accuracy(voom_quality)
-
-# V1 LSvsHC -----------------
-
 ```
+
+
+
 
 ```{r}
 se_ad_q34[top20, se_ad_q34$visit == "01" & 
@@ -760,6 +776,7 @@ data.frame(Dim1=tsne_data$Y[,1], Dim2=tsne_data$Y[,2],
 
 ### differential expression analysis
 ```{r}
+library(zinbwave)
 zinbwave_cov <- zinbwave(se_ad_q34, K=2, 
                          X = "~ qc_0_4",
                          epsilon=1e12,
@@ -787,7 +804,14 @@ topTags(lrt, n = Inf) %>% data.frame() %>% as.tibble(rownames = "feature") %>%
 library(DESeq2)
 dds <- DESeqDataSet(zinbwave_cov, design = ~ skin_type)
 dds <- DESeq(dds, sfType = "poscounts", useT = T, minmu = 1e-6)
-res <- lfcShrink(dds, coef = "skin_type_LS_vs_HC")
+res <- lfcShrink(dds, coef = "skin_type_LS_vs_NL") 
+
+res_zinbwave_deseq2 <- 
+  res %>% as_tibble(rownames = "feature") %>% 
+  filter(pvalue < .05, abs(log2FoldChange) > 1) %>% 
+  mutate(direction = ifelse(log2FoldChange > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest
+res_zinbwave_deseq2 %>% calc_accuracy()
 ```
 
 ```{r}
