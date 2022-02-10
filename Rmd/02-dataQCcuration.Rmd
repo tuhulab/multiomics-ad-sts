@@ -776,28 +776,7 @@ data.frame(Dim1=tsne_data$Y[,1], Dim2=tsne_data$Y[,2],
 
 ### differential expression analysis
 ```{r}
-library(zinbwave)
-zinbwave_cov <- zinbwave(se_ad_q34, K=2, 
-                         X = "~ qc_0_4",
-                         epsilon=1e12,
-                         observationalWeights = TRUE)
 
-weights <- assay(zinbwave_cov, "weights")
-
-
-dge <- DGEList(assay(se_ad_q34))
-dge <- calcNormFactors(dge)
-
-design <- model.matrix(~skin_type, data = colData(se_ad_q34))
-dge$weights <- weights
-dge <- estimateDisp(dge, design)
-fit <- glmFit(dge, design)
-lrt <- glmWeightedF(fit, coef = "skin_typeLS")
-
-topTags(lrt, n = Inf) %>% data.frame() %>% as.tibble(rownames = "feature") %>% 
-  filter(PValue < .05, abs(logFC) > 1) %>% mutate(direction = ifelse(logFC > 0, "up", "down")) %>% 
-  group_by(direction) %>% nest() %>% 
-  calc_accuracy()
 ```
 
 ```{r deseq2}
@@ -836,10 +815,10 @@ mynoiseq <-
 ```
 
 ```{r}
-noiseq_res <- 
-  mynoiseq@results[[1]] %>% as_tibble(rownames = "feature") %>% 
+noiseq_res <-
+  mynoiseq@results[[1]] %>% as_tibble(rownames = "feature") %>%
   mutate(abs_ranking = abs(ranking),
-         direction = ifelse(M < 0, "up", "down")) %>% 
+         direction = ifelse(M < 0, "up", "down")) %>%
   slice_max(abs_ranking, prop = 0.05)
 
 noiseq_res %>% 

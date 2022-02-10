@@ -7,7 +7,14 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-pacman::p_load("tidybulk")
+pacman::p_load("tidybulk", "tidySummarizedExperiment",
+               "tidyr", "dplyr", "stringr",
+               "limma", "SummarizedExperiment", 
+               "DESeq2", "BiocParallel",
+               "tibble")
+
+core_n <- future::availableCores()
+register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
 ```
 
 
@@ -29,7 +36,10 @@ reference <-
 
 
 ## DE 
-```{r }
+
+### edgeR + RLM, TMM, TMMwsp
+
+```{r DE test: RLE TMM TMMwsp VST transformed}
 dge_ad_qc34 <- 
   se_ad_q34 %>% 
   test_differential_abundance(~ skin_type + subject_id, 
@@ -40,13 +50,160 @@ dge_ad_qc34 <-
                               scaling_method = "TMM") %>% 
   test_differential_abundance(~ skin_type + subject_id, 
                               prefix = "TMMwsp",
-                              scaling_method = "TMMwsp") %>% 
-  test_differential_abundance(~ skin_type + subject_id, 
-                              prefix = "DESeq2",
-                              method = "DESeq2") %>% 
+                              scaling_method = "TMMwsp")
+
+dge_ad_qc34_result <- 
+  dge_ad_qc34 %>% pivot_transcript() %>% 
+  select(feature, 
+         RLElogFC, RLEPValue, RLEFDR, 
+         TMMlogFC, TMMPValue, TMMFDR, 
+         TMMwsplogFC, TMMwspPValue, TMMwspFDR) %>% 
+  pivot_longer(cols = -feature, names_to = "parameter") %>% 
+  mutate(test = parameter %>% str_extract("RLE|TMMwsp|TMM")) %>% 
+  mutate(parameter = case_when(
+    parameter %in% c("RLElogFC", "TMMlogFC", "TMMwsplogFC") ~ "logFC",
+    parameter %in% c("RLEPValue", "TMMPValue", "TMMwspPValue") ~ "p",
+    parameter %in% c("RLEFDR", "TMMFDR", "TMMwspFDR") ~ "padj_FDR"
+  )) %>% 
+  pivot_wider(names_from = parameter) %>% 
+  mutate(direction = ifelse(logFC > 0, "up", "down"))
+```
+
+### limma voom
+```{r limma-voom}
+limma_voom <-
+  se_ad_q34 %>% 
   test_differential_abundance(~ skin_type + subject_id, 
                               prefix = "limma",
                               method = "limma_voom")
+
+limma_voom_res <-
+  limma_voom %>% pivot_transcript() %>% 
+  filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
+  mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
+
+calc_accuracy(limma_voom_res)
+```
+
+### limma voom with quality weight
+
+```{r}
+limma_voom_sample_weight <-
+  se_ad_q34 %>% 
+  test_differential_abundance(~ skin_type + subject_id, 
+                              prefix = "limma",
+                              method = "limma_voom_sample_weights", 
+                              scaling_method = "TMM")
+
+limma_voom_sample_weight_res <-
+  limma_voom_sample_weight %>% pivot_transcript() %>% 
+  filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
+  mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
+
+calc_accuracy(limma_voom_sample_weight_res)
+```
+
+### ZINB-WaVE edgeR
+```{r }
+library(zinbwave)
+library(edgeR)
+zinbwave_cov <- zinbwave(se_ad_q34, K=2, 
+                         X = "~ qc_coverage",
+                         epsilon=1e12,
+                         observationalWeights = TRUE)
+
+zinbwave_weights <- assay(zinbwave_cov, "weights")
+
+dge_zinbwave <- DGEList(assay(se_ad_q34))
+dge_zinbwave <- calcNormFactors(dge_zinbwave)
+
+design_zinbwave <- model.matrix(~skin_type, data = colData(se_ad_q34))
+
+dge_zinbwave$weights <- zinbwave_weights
+dge_zinbwave <- estimateDisp(dge_zinbwave, design_zinbwave)
+fit_zinbwave <- glmFit(dge_zinbwave, design_zinbwave)
+lrt_zinbwave <- glmWeightedF(fit_zinbwave, coef = "skin_typeLS")
+
+zinbwave_res <- 
+  topTags(lrt_zinbwave, n = Inf) %>% data.frame() %>% 
+  as_tibble(rownames = "feature") %>% 
+  filter(PValue < .05, abs(logFC) > 1) %>% mutate(direction = ifelse(logFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
+```
+
+### ZINB-WavE DESeq2
+```{r}
+
+dds_zinbwave <- DESeqDataSet(zinbwave_cov, design = ~ skin_type)
+dds_zinbwave <- DESeq(dds_zinbwave, sfType = "poscounts", useT = T, minmu = 1e-6)
+res_zinbwave <- lfcShrink(dds_zinbwave, coef = "skin_type_LS_vs_NL") 
+
+res_zinbwave_deseq2 <- 
+  res_zinbwave %>% as_tibble(rownames = "feature") %>% 
+  filter(pvalue < .05, abs(log2FoldChange) > 1) %>% 
+  mutate(direction = ifelse(log2FoldChange > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest
+```
+
+
+## calc accuracy
+```{r fun calculate accuracy}
+calc_accuracy <-
+  function(DE, DE_ref = reference){
+    DE_ref_up <- DE_ref %>% filter(contrast == "LSvsNL", direction == "up") %>% pull(gene_name)
+    DE_ref_down <- DE_ref %>% filter(contrast == "LSvsNL", direction == "down") %>% pull(gene_name)
+    
+    DE_up <- DE$data[DE$direction == "up"][[1]] %>% pull(feature)
+    DE_down <- DE$data[DE$direction == "down"][[1]] %>% pull(feature)
+    
+    DE_up_a <- DE_up %in% (DE_ref_up)
+    DE_down_a <- DE_down %in% (DE_ref_down)
+    
+    DE_w_total_a <- length(DE_up) * mean(DE_up_a) / (length(DE_up) + length(DE_down)) + length(DE_down) * mean(DE_down_a) / (length(DE_up) + length(DE_down))
+    
+    result <- c("up" = sum(DE_up_a), "down" = sum(DE_down_a), "total" = DE_w_total_a)
+    return(result)
+    }
+
+```
+
+### edgeR (RLE)
+```{r RLE}
+RLE <- 
+  dge_ad_qc34_result %>% filter(test == "RLE") %>% filter(abs(logFC) > 1, padj_FDR < .05) %>% 
+  group_by(direction) %>% nest()
+calc_accuracy(RLE)
+```
+
+
+```{r limma}
+
+calc_accuracy(limma)
+```
+
+
+## noiseq
+```{r}
+library(NOISeq)
+mydata <- readData(data = se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2),
+                 factors = colData(se_ad_q34)
+)
+
+mynoiseq <-
+  noiseq(mydata, k=0.5, norm = "n",
+         factor = "skin_type", lc = 1,
+         conditions = c("NL", "LS"))
+
+noiseq_res <-
+  mynoiseq@results[[1]] %>% as_tibble(rownames = "feature") %>%
+  mutate(abs_ranking = abs(ranking),
+         direction = ifelse(M < 0, "up", "down")) %>%
+  slice_max(-ranking, prop = 0.05)
+
+noiseq_res_deq <- noiseq_res$feature
+noiseq_res_deq[noiseq_res_deq %in% reference$gene_name]
 ```
 
 
