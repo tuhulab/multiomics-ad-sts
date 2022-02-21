@@ -27,4 +27,13 @@ se_tapestriping <-
 We compared tape striping data with punch biopsy data that is sampled from the same skin site.
 The first obvious difference is that, in deep-sequenced full-thickness biopsy, we were able to detect expression of more than 15000 genes, within which 2000 genes were detected as differentially expressed between conditions. But, from tape striping BRB-seq, we were only able to detect 2310 genes, by aggregating all genes, we were only able to detect 
 
+## Comparison
+```{r}
+se_biopsy_summarise <-
+  se_biopsy %>% as_tibble() %>% 
+  group_by(subject, visit, skin_type, feature) %>% 
+  summarise(biopsy_expr = mean(counts_scaled))
+
+
+```
 
