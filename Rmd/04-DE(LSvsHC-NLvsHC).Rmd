@@ -1,5 +1,5 @@
 ---
-title: "04-Compare with full-thickness biopsy"
+title: "04-DE(LSvsHC and NLvsHC)"
 author: "Tu Hu"
 date: "2/21/2022"
 output: html_document
@@ -14,18 +14,11 @@ pacman::p_load("tidybulk", "tidySummarizedExperiment",
                "tibble")
 ```
 
-## load data
-```{r}
-se_biopsy <-
-  readRDS("../../multiomics-ad-phd/data/se.rds")
 
-se_tapestriping <-
-  readRDS("../data/se_qc.rds")
-```
 
 
 We compared tape striping data with punch biopsy data that is sampled from the same skin site.
-The first obvious difference is that, in deep-sequenced full-thickness biopsy, we were able to detect expression of more than 15000 genes, within which 2000 genes were detected as differentially expressed between conditions. But, from tape striping BRB-seq, we were only able to detect 2310 genes, by aggregating all genes, we were only able to detect 
+The first obvious difference is that, in deep-sequenced full-thickness biopsy, we were able to detect expression of more than 15000 genes, within which 2000 genes were detected as differentially expressed between conditions. But, from tape striping BRB-seq, we were only able to detect 2310 genes, by aggregating all genes, we were only able to detect.
 
 ## Comparison
 ```{r}

@@ -311,7 +311,7 @@ noiseq_res_top10 <-
 noiseq_res_top10_res <-
   list("result_1" = paste0(10," (", sum(noiseq_res_top10$feature %in% reference$gene_name), "/", 0, ")"),
        "result_2" = paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top10$feature %in% reference$gene_name)), 
-                           " (", sum(noiseq_res_top20$feature %in% reference$gene_name), "/", 0, ")"),
+                           " (", sum(noiseq_res_top10$feature %in% reference$gene_name), "/", 0, ")"),
        "gene_up" = 
          noiseq_res_top10$feature[noiseq_res_top10$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
 ```
@@ -410,5 +410,9 @@ names(lt)[6:8] <- c("NOIseq-top5%", "NOIseq-top20", "NOIseq-top10")
 
 lt_upset <- list_to_matrix(lt) %>% make_comb_mat()
 UpSet(lt_upset, comb_order = order(comb_size(lt_upset), decreasing = T))
+```
+
+```{r save, eval=FALSE}
+saveRDS(table, "../data/benchmark_table.rds")
 ```
 
