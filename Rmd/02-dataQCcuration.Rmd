@@ -16,7 +16,7 @@ pacman::p_load(
   "dplyr", "stringr", "purrr", "tidyr", "ggplot2", 
   "tibble", "SummarizedExperiment", "tidySummarizedExperiment", 
   "tidybulk", "ComplexHeatmap", "ggpubr", "DT",
-  "DESeq2", "BiocParallel", "edgeR")
+  "DESeq2", "BiocParallel", "edgeR", "lme4")
 pca_color <- c("LS" = "#eb2d0c", "NL" = "#eb8b9b", "HC" = "#91cf60")
 core_n <- future::availableCores()
 register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
@@ -212,7 +212,7 @@ lib_size_g <-
               add = "median", rug = TRUE, fill = "lightgray") 
 
 lib_size_g
-ggsave("../data/figure/lib_size_g.jpeg", lib_size_g, width = 7, height = 5)
+# ggsave("../data/figure/lib_size_g.jpeg", lib_size_g, width = 7, height = 5)
 
 lib_size_g %>% facet("batch") %>%  ggpar(font.xtickslab = "8")
 
@@ -229,7 +229,8 @@ We tested RNA yield variation using linear mixed effect model.
 ```{r RNA yield - skin type}
 colData(se)$counts_sum <- counts_sum$counts_sum
 
-se %>% pivot_sample() %>% 
+rna_yield_skin_type_g <- 
+  se %>% pivot_sample() %>% 
   ggboxplot(x = "skin_type", 
             y = "counts_sum", 
             yscale = "log10",
@@ -244,10 +245,14 @@ se %>% pivot_sample() %>%
     c("HC", "LS")
   ), methods= "t.test") +
   theme(legend.position = "none")
+# ggsave("../figure/RNA_yield_skin_type.jpeg", 
+#        width = 5, height = 5, units = "in", 
+#        rna_yield_skin_type_g)
 ```
 
 ```{r RNA yield - season}
-se %>% pivot_sample() %>% 
+rna_yield_season_g <- 
+  se %>% pivot_sample() %>% 
   filter(!is.na(visit_quarter)) %>% 
   ggboxplot(x = "visit_quarter", 
             y = "counts_sum", 
@@ -263,30 +268,16 @@ se %>% pivot_sample() %>%
     ), methods= "t.test")+
   stat_compare_means(method = "anova") +
   theme(legend.position = "none")
+# ggsave("../figure/RNA_yield_season.jpeg", 
+#        width = 5, height = 5, units = "in", 
+#        rna_yield_season_g)
 ```
 
-```{r}
-se %>% pivot_sample() %>% 
-  filter(!is.na(visit_quarter)) %>% 
-  ggboxplot(x = "biopsy_area", 
-            y = "counts_sum", 
-            yscale = "log10",
-            add = c("jitter"), 
-            color = "biopsy_area",
-            xlab = "Biopsy area",
-            ylab = "Total counts") +
-    stat_compare_means(comparisons = list(
-    c("Q1", "NL"),
-    c("NL", "LS"),
-    c("HC", "LS")
-    ), methods= "t.test")+
-  stat_compare_means(method = "anova") +
-  theme(legend.position = "none")
-```
-
-
-```{r lme}
-lmerTest::lmer(counts_sum ~ skin_type + visit_quarter + biopsy_area + (1|subject_id), data = se %>% pivot_sample() ) %>% broom.mixed::tidy()
+```{r rna-yield-lme}
+rna_yield_lme <-
+  lmerTest::lmer(
+  counts_sum ~ skin_type + visit_quarter + biopsy_area + (1|subject_id), 
+  data = se %>% pivot_sample() ) %>% broom.mixed::tidy()
 ```
 
 ### Unknown barcode
@@ -298,148 +289,7 @@ unknown_barcode_percent <-
 
 Within mapped reads, `r scales::label_percent()(unknown_barcode_percent)` of reads can't find their origins (detected as unknown barcode).
 
-### Number of expressed genes
-```{r expressed genes}
-g_x <- assay(se) %>% rowMeans()   # mean expression of genes
-n_g_x <- length(g_x[g_x > 1])     # expressed genes
-```
-
-- Only protein coding genes (n=`r counts_g_p %>% nrow`) are kept for analysis.
-
-- `r n_g_x` genes are expressed (mean counts > 1).
-
-## Data transformation
-
-
-
-
-### PCA and Heatmap
-
-#### dimension reduction
-
-
-### Heatmap
-
-Samples are clustered according to read depth (?).
-
-```{r heatmap-generate, eval=FALSE}
-heatmap_data_m <-
-  scale(assay(se_scale, 2) %>% t() %>% log1p(), 
-        center = TRUE, scale = TRUE) %>% t()
-
-sample_site_color <- 
-  colData(se_scale) %>% as_tibble() %>% pull(biopsy_area) %>% unique()
-
-color <- RColorBrewer::brewer.pal(length(sample_site_color), "Pastel2")
-names(color) <- sample_site_color
-
-heatmap_annotation <- 
-  HeatmapAnnotation(
-    `Tissue type` = colData(se_scale) %>% as_tibble() %>% pull(skin_type), 
-    `Anatomic region` = colData(se_scale) %>% as_tibble() %>% pull(biopsy_area),
-    col = list(`Tissue type` = pca_color),
-               # `Anatomic region` = color),
-    annotation_legend_param = list(`Tissue type` = list(nrow = 1, 
-                                                        title_gp = gpar(fontsize = 16),
-                                                        labels_gp = gpar(fontsize = 16)),
-                                   `Anatomic region` = list(nrow = 1,
-                                                            title_gp = gpar(fontsize = 16),
-                                                            labels_gp = gpar(fontsize = 16))
-                                   ))
-
-heatmap <- ComplexHeatmap::Heatmap(heatmap_data_m,
-                        name = "gene expression",
-                        column_dend_reorder = TRUE,
-                        # clustering_method_columns = "complete",
-                        show_column_names = FALSE,
-                        show_row_names = FALSE,
-                        show_row_dend = FALSE,
-                        # row_names_gp = gpar(fontsize = min(10, 800 * 1.5 / dim(heatmap_data_m)[1])),
-                        top_annotation = heatmap_annotation,
-                        heatmap_legend_param = list(
-                          title_gp = gpar(fontsize = 16),
-                          labels_gp = gpar(fontsize = 14)
-                          ))
-
-jpeg("../data/figure/heatmap_allg.jpeg",
-     width = 480*2, height = 480*1.3)
-draw(heatmap, heatmap_legend_side = "right",
-     annotation_legend_side = "top", merge_legend = FALSE)
-dev.off()
-```
-
-```{r include heatmap, fig.align='center', out.width='100%'}
-knitr::include_graphics("../data/figure/heatmap_allg.jpeg")
-```
-
-### PCA plot using generalized PCA
-
-```{r eval=FALSE}
-library("glmpca")
-gpca <- glmpca(counts(dds), L=2)
-gpca.dat <- gpca$factors
-gpca.dat$dex <- dds$dex
-gpca.dat$cell <- dds$cell
-```
-
-
-
-
 ## Data curation
-
-We performed data curation by filtering out samples with low epidermis signature genes (FLG, LORICRIN), total sequencing depth, correlation coefficient with the group.
-
-
-```{r heatmap, eval=FALSE}
-heatmap_data_m <-
-  scale(assay(se_rmS_scale, 2) %>% t() %>% log1p(), 
-        center = TRUE, scale = TRUE) %>% t()
-
-sample_site_color <- 
-  colData(se_rmS_scale) %>% as_tibble() %>% pull(biopsy_area) %>% unique()
-
-color <- RColorBrewer::brewer.pal(length(sample_site_color), "Pastel2")
-names(color) <- sample_site_color
-
-heatmap_annotation <- 
-  HeatmapAnnotation(
-    `Tissue type` = colData(se_rmS_scale) %>% as_tibble() %>% pull(skin_type), 
-    `Anatomic region` = colData(se_rmS_scale) %>% as_tibble() %>% pull(biopsy_area),
-    col = list(`Tissue type` = pca_color),
-               # `Anatomic region` = color),
-    annotation_legend_param = list(`Tissue type` = list(nrow = 1, 
-                                                        title_gp = gpar(fontsize = 16),
-                                                        labels_gp = gpar(fontsize = 16)),
-                                   `Anatomic region` = list(nrow = 1,
-                                                            title_gp = gpar(fontsize = 16),
-                                                            labels_gp = gpar(fontsize = 16))
-                                   ))
-
-heatmap <- ComplexHeatmap::Heatmap(heatmap_data_m,
-                        name = "gene expression",
-                        column_dend_reorder = TRUE,
-                        # clustering_method_columns = "complete",
-                        show_column_names = FALSE,
-                        show_row_names = FALSE,
-                        show_row_dend = FALSE,
-                        # row_names_gp = gpar(fontsize = min(10, 800 * 1.5 / dim(heatmap_data_m)[1])),
-                        top_annotation = heatmap_annotation,
-                        heatmap_legend_param = list(
-                          title_gp = gpar(fontsize = 16),
-                          labels_gp = gpar(fontsize = 14)
-                          ))
-
-jpeg("../data/figure/heatmap_allg.jpeg",
-     width = 480*2, height = 480*1.3)
-draw(heatmap, heatmap_legend_side = "right",
-     annotation_legend_side = "top", merge_legend = FALSE)
-dev.off()
-
-```
-
-## Epidermal differentiation coomplex (EDC) genes
-
-We detected expression of 2310 genes. We performed quality control based on a 4-point systematic data quality evaluation.
 
 ```{r filter out low expr genes}
 se_x <- # se expressed
@@ -479,351 +329,123 @@ qc_EDC_count100 <- colSums(assay(se_x[g_EDC,])) > 100
 ```
 
 ```{r construct new se}
-se_qc <- se_x[!rownames(se_x) %>% str_detect("MT-"), ]
+se_qc <- se_x[!rownames(se_x) %>% str_detect("MT-"), ] #2310
 se_qc$qc_hair_1percent <- qc_hair_1percent
 se_qc$qc_MT_ratio15 <- qc_MT_ratio15
 se_qc$qc_EDC_5percent <- qc_EDC_5percent
 se_qc$qc_EDC_count100 <- qc_EDC_count100
 se_qc$qc_sensitivity_200 <- qc_sensitivity_g_1 > 200
 se_qc$qc_0_4 <- qc_EDC_5percent + qc_EDC_count100 + (qc_sensitivity_g_1 > 200) + qc_MT_ratio15
-se_qc$qc_coverage <- ifelse(se_qc$counts_sum < 30000, "low", "high")
+se_qc$qc_coverage <- ifelse(se_qc$counts_sum < 35000, "low", "high")
 # saveRDS(se_qc, "../data/se_qc.rds")
+
+
+se_qc_wMT <- se_x[,] #2323
+colData(se_qc_wMT) <- colData(se_qc)
+# saveRDS(se_qc_wMT, "../data/se_qc_wMT.rds")
 ```
 
 After QC, we detected expression of `r nrow(se_qc[,se_qc$qc_0_4>2])` genes, with > 1 count in at least 80% of samples. After a 4-point scheme quality filtering, We kept `r ncol(se_qc[,se_qc$qc_0_4>2])` samples for further analysis.
 
+### Statistics on filtered samples
 
-
-
-```{r deseq}
-se_ad_q34 <- 
-  se_qc[, (se_qc$qc_0_4 > 2) & (se_qc$group == "AD")]
-se_ad_q34$skin_type <- se_ad_q34$skin_type %>% droplevels() # remove level HC
-
-
-# assays(se_ad_q34)$TMMwsp <- se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2)
-# assays(se_ad_q34)$RLE <- se_ad_q34 %>% scale_abundance(method = "RLE") %>% assay(2)
-# assays(se_ad_q34)$VST <- se_ad_q34 %>% DESeqDataSet(design = ~ skin_type + subject_id) %>% vst(blind = T) %>% assay()
-# assays(se_ad_q34)$rlog <- se_ad_q34 %>% DESeqDataSet(design = ~ skin_type + subject_id) %>% rlog(blind = T) %>% assay()
-# norm_F <- 
-#   matrix(
-#     rep(colSums(assay(se_ad_q34, 1)[rownames(se_ad_q34) %>% grep("MT-", ., value = T),]), 
-#         times = nrow(se_ad_q34)), nrow = nrow(se_ad_q34), 
-#     byrow = T)
-# assays(se_ad_q34)$MT_norm <- log(1000000 * (assay(se_ad_q34,1) + 1) / norm_F) # maybe modify it
-dge_ad_qc34 <- 
-  se_ad_q34 %>% 
-  test_differential_abundance(~ skin_type + subject_id, 
-                              prefix = "RLE",
-                              scaling_method = "RLE") %>% 
-  test_differential_abundance(~ skin_type + subject_id, 
-                              prefix = "TMM",
-                              scaling_method = "TMM") %>% 
-  test_differential_abundance(~ skin_type + subject_id, 
-                              prefix = "TMMwsp",
-                              scaling_method = "TMMwsp") %>% 
-  test_differential_abundance(~ skin_type + subject_id, 
-                              prefix = "DESeq2",
-                              method = "DESeq2") %>% 
-  test_differential_abundance(~ skin_type + subject_id, 
-                              prefix = "limma",
-                              method = "limma_voom")
+```{r eval=FALSE}
+# se_qc <- readRDS("../data/se_qc.rds")
 ```
 
 ```{r}
-dge_ad_qc34_result <- 
-  dge_ad_qc34 %>% pivot_transcript() %>% 
-  select(feature, 
-         RLElogFC, RLEPValue, RLEFDR, 
-         TMMlogFC, TMMPValue, TMMFDR, 
-         TMMwsplogFC, TMMwspPValue, TMMwspFDR, 
-         DESeq2log2FoldChange, DESeq2pvalue, DESeq2padj, 
-         limmalogFC, limmaP.Value, limmaadj.P.Val) %>% 
-  pivot_longer(cols = -feature, names_to = "parameter") %>% 
-  mutate(test = parameter %>% str_extract("RLE|TMMwsp|TMM|DESeq2|limma")) %>% 
-  mutate(parameter = case_when(
-    parameter %in% c("RLElogFC", "TMMlogFC", "TMMwsplogFC", "DESeq2log2FoldChange", "limmalogFC") ~ "logFC",
-    parameter %in% c("RLEPValue", "TMMPValue", "TMMwspPValue", "DESeq2pvalue", "limmaP.Value") ~ "p",
-    parameter %in% c("RLEFDR", "TMMFDR", "TMMwspFDR", "DESeq2padj", "limmaadj.P.Val") ~ "padj_FDR"
-  )) %>% 
-  pivot_wider(names_from = parameter) %>% 
-  mutate(direction = ifelse(logFC > 0, "up", "down"))
+se_qc %>% pivot_sample() %>% 
+  group_by(skin_type) %>% 
+  summarise(n = n())
 ```
 
-
-
-```{r reference data}
-reference <-
-  readr::read_csv("../../multiomics-ad-phd/data/supplementary/table_s2.csv")
+```{r qc statistics}
+se_qc %>% pivot_sample() %>% 
+  filter(qc_0_4 < 3) %>% 
+  group_by(skin_type) %>% 
+  summarise(n = n())
 ```
 
+```{r lmer}
+se_qc_vp <- se_qc[,se_qc$qc_0_4 > 2]
+colData(se_qc_vp)$RNA_yield <- 
+  se_qc_vp %>% 
+  assay() %>% 
+  colSums() %>% 
+  log2()
+se_qc_vp_col <- se_qc_vp %>% pivot_sample()
 
-```{r calculate accuracy}
-calc_accuracy <-
-  function(DE, DE_ref = reference){
-    DE_ref_up <- DE_ref %>% filter(contrast == "LSvsNL", direction == "up") %>% pull(gene_name)
-    DE_ref_down <- DE_ref %>% filter(contrast == "LSvsNL", direction == "down") %>% pull(gene_name)
-    
-    DE_up <- DE$data[DE$direction == "up"][[1]] %>% pull(feature)
-    DE_down <- DE$data[DE$direction == "down"][[1]] %>% pull(feature)
-    
-    DE_up_a <- DE_up %in% (DE_ref_up)
-    DE_down_a <- DE_down %in% (DE_ref_down)
-    
-    DE_w_total_a <- length(DE_up) * mean(DE_up_a) / (length(DE_up) + length(DE_down)) + length(DE_down) * mean(DE_down_a) / (length(DE_up) + length(DE_down))
-    
-    result <- c("up" = sum(DE_up_a), "down" = sum(DE_down_a), "total" = DE_w_total_a)
-    return(result)
-    }
-
-
-RLE <- 
-  dge_ad_qc34_result %>% filter(test == "RLE") %>% filter(abs(logFC) > 1, padj_FDR < .05) %>% 
-  group_by(direction) %>% nest()
-calc_accuracy(RLE)
-
-
-TMM <- 
-  dge_ad_qc34_result %>% filter(test == "TMM") %>% filter(abs(logFC) > 1, p < .05) %>% 
-  group_by(direction) %>% nest()
-calc_accuracy(TMM)
-
-
-TMMwsp <- 
-  dge_ad_qc34_result %>% filter(test == "TMMwsp") %>% filter(abs(logFC) > 1, p < .05) %>% 
-  group_by(direction) %>% nest()
-calc_accuracy(TMMwsp)
-
-limma <-
-  dge_ad_qc34_result %>% filter(test == "limma") %>% filter(abs(logFC) > 1, p < .05) %>% 
-  group_by(direction) %>% nest()
-calc_accuracy(limma)
-
-
-DESeq2 <-
-  dge_ad_qc34_result %>% filter(test == "DESeq2") %>% filter(abs(logFC) > 1, padj_FDR < .05) %>% 
-  group_by(direction) %>% nest()
-calc_accuracy(DESeq2)
-
-```
-
-
-
-
-
-## limma-voom
-```{r}
-
-se_ad_q34
-
-# V1 LSvsNL ----------------
-design <- model.matrix(
-  ~  se_ad_q34$skin_type + se_ad_q34$subject_id
-)
-  
-
-v <- voom(se_ad_q34 %>% assay(1), design, plot = T)
-fit <- lmFit(v, design)
-fit <- eBayes(fit)
-voom <-
-  topTable(fit, number = Inf, coef = 2) %>% as_tibble(rownames = "feature") %>% 
-  filter(abs(logFC) > 1, P.Value < .05) %>% 
-  mutate(direction = ifelse(logFC < 0, "down", "up")) %>% 
-  group_by(direction) %>% nest
-
-calc_accuracy(voom)
-
-# V1 LSvsHC -----------------
-
+lmerTest::lmer(RNA_yield ~ gender + skin_type + visit_quarter + qc_hair_1percent + (1|subject_id), se_qc_vp_col) %>% broom.mixed::tidy()
 ```
 
 ```{r}
-v <- voomWithQualityWeights(se_ad_q34 %>% assay(1), design, plot = T)
-fit <- lmFit(v, design)
-fit <- eBayes(fit)
-voom_quality <-
-  topTable(fit, number = Inf, coef = 2) %>% as_tibble(rownames = "feature") %>% 
-  filter(abs(logFC) > 1, P.Value < .05) %>% 
-  mutate(direction = ifelse(logFC < 0, "down", "up")) %>% 
-  group_by(direction) %>% nest
-
-voom_quality <-
-  topTable(fit, number = Inf, coef = 2) %>% as_tibble(rownames = "feature") %>% 
-  filter(abs(logFC) > 1, adj.P.Val < .05) %>% 
-  mutate(direction = ifelse(logFC < 0, "down", "up")) %>% 
-  group_by(direction) %>% nest
-
-calc_accuracy(voom_quality)
+se_qc_vp %>% pivot_transcript() %>% 
+  mutate(median_expr = se_qc_vp %>% assay() %>% matrixStats::rowMeans2()) %>% 
+  slice_max(median_expr, n = 10)
 ```
-
-
-
 
 ```{r}
-se_ad_q34[top20, se_ad_q34$visit == "01" & 
-          se_ad_q34$skin_type %in% c("LS", "NL") & 
-          se_ad_q34$qc_0_4 > 2] %>% scale_abundance() %>% as_tibble() %>% 
-  ggplot(aes(skin_type, TMMwsp)) + geom_point() + geom_boxplot() +
-  facet_wrap("feature", scales = "free")
-
-se_ad_q34[top20, se_ad_q34$visit == "01" & 
-          se_ad_q34$skin_type %in% c("LS", "NL") & 
-          se_ad_q34$qc_0_4 > 2] %>% scale_abundance() %>% as_tibble() %>%   ggplot(aes(skin_type, RLE)) + geom_point() + geom_boxplot() +
-    facet_wrap("feature", scales = "free")
-
-se_ad_q34[top20, 
-          se_ad_q34$skin_type %in% c("LS", "NL") & 
-          se_ad_q34$qc_0_4 > 2] %>% scale_abundance() %>% as_tibble() %>%   ggplot(aes(skin_type, MT_norm)) + geom_point() + geom_boxplot() +
-  facet_wrap("feature", scales = "free")
-
+se_qc_vp[, se_qc_vp$skin_type %in% c("NL", "HC")] %>% 
+  scale_abundance(method = "TMMwsp") %>% 
+  pivot_transcript() %>% 
+  mutate(median_expr = se_qc_vp %>% assay() %>% rowMeans()) %>% 
+  slice_max(median_expr, n = 10)
 ```
-
-
-
-
-
 ```{r}
+gene_detection <- 
+  se_qc_vp[, se_qc_vp$skin_type %in% c("NL", "HC")] %>% 
+  scale_abundance(method = "TMMwsp") %>% 
+  pivot_transcript() %>% 
+  mutate(median_expr = se_qc_vp %>% assay() %>% rowMeans()) %>% 
+  arrange(-median_expr)
 
-  # group_by(test) %>% summarise(n = n())
+which(gene_detection$feature == "KRT10")
+which(gene_detection$feature == "KRT14")
+which(gene_detection$feature == "KRTAP1-5")
+which(gene_detection$feature == "KRT5")
+which(gene_detection$feature == "KRTAP4-9")
+which(gene_detection$feature == "FLG2")
+which(gene_detection$feature == "KRT86")
+which(gene_detection$feature == "KRT17")
+which(gene_detection$feature == "ACTG1")
+```
 
-dge_ad_qc34_result %>% arrange(test, -logFC) %>% 
-  openxlsx::write.xlsx("../_tmp/deg_different_test.xlsx")
+```{r enrichr}
+gene_detection$feature[1:500] %>% writeLines("../_tmp/gene_expressed.txt")
 ```
 
 
+## Heatmap
 
-## ZINB-WaVE
+## GLMPCA
+```{r glmpca}
+### PCA plot using generalized PCA
+library("glmpca")
+se_qc <- readr::read_rds("../data/se_qc.rds")
+gpca <- glmpca(assay(se_qc), L = 2, fam = "nb2")
+gpca.dat <- gpca$factors
 
-```{r }
-library(zinbwave)
 
-# se_qc <- readr::read_rds("../data/se_qc.rds")
-
-se_zinbwave <- se_qc[, se_qc$qc_0_4 > 2] # only keep high quality samples
-
-# vars <- assay(se_zinbwave) %>% log1p() %>% rowVars()
-# names(vars) <- rownames(se_zinbwave)
-# vars <- sort(vars, decreasing = T)
-# head(vars, 20)
-
-zinbwave <- zinbwave(se_zinbwave, K=2, epsilon=1000)
-
-# coverage
-W <- reducedDim(zinbwave)
-data.frame(W, skin_type = colData(se_zinbwave)$skin_type,
-              coverage = colData(se_zinbwave)$qc_coverage
-           ) %>%
-    ggplot(aes(W1, W2, 
-               colour=skin_type, shape=coverage)) + 
-               geom_point() + 
-    scale_color_brewer(type = "qual", palette = "Set1") +
+se_qc[table$`Gene (overexpressed)` %>% unlist %>% unique, ] %>% 
+  pivot_sample() %>% 
+  left_join(gpca$factors %>% as_tibble(rownames = "sample")) %>% 
+  ggplot(aes(x = dim1, y = dim2, color = skin_type)) +
+  geom_point() +
   theme_classic()
-```
+  # scale_color_manual()
 
 
-```{r add sample level}
-zinbwave_cov <- zinbwave(se_zinbwave, K=2, 
-                         X = "~qc_coverage",
-                         epsilon=1000,
-                         observationalWeights = TRUE)
+se_qc_dr <- se_qc %>% reduce_dimensions(method = "PCA")
 
-# coverage
-W <- reducedDim(zinbwave_cov)
-data.frame(W, skin_type = colData(se_zinbwave)$skin_type,
-              coverage = colData(se_zinbwave)$qc_coverage
-           ) %>%
-    ggplot(aes(W1, W2, 
-               colour=skin_type, shape=coverage)) + 
-               geom_point() + 
-    scale_color_brewer(type = "qual", palette = "Set1") +
-  theme_classic()
-```
+pca_plot <-
+  se_qc_dr %>% 
+  pivot_sample() %>% 
+  rename(`Sequencing coverage` = qc_coverage,
+         `Tissue type` = skin_type) %>% 
+  ggscatter(x = "PC1", y = "PC2", color = "Sequencing coverage", 
+            shape = "Tissue type", font.legend = c(10, "plain", "black"))
 
-```{r add gene level}
-library(biomaRt)
-mart <- useMart("ensembl")
-mart <- useDataset("hsapiens_gene_ensembl", mart = mart)
-bm <- getBM(attributes=c('hgnc_symbol', 'start_position',
-                         'end_position', 'percentage_gene_gc_content'),
-            filters = 'hgnc_symbol',
-            values = rownames(se_zinbwave),
-            mart = mart)
-
-bm$length <- bm$end_position - bm$start_position
-len <- tapply(bm$length, bm$hgnc_symbol, mean)
-len <- len[rownames(se_zinbwave)]
-gcc <- tapply(bm$percentage_gene_gc_content, bm$hgnc_symbol, mean)
-gcc <- gcc[rownames(se_zinbwave)]
-
-rowData(se_zinbwave) <- data.frame(gccontent = gcc, length = len)
-
-se_zinbwave_gcc <- zinbwave(se_zinbwave, K=2, V="~gccontent + log(length)", epsilon=1000)
-```
-
-```{r}
-set.seed(0714)
-
-library(Rtsne)
-W <- reducedDim(zinbwave_cov)
-tsne_data <- Rtsne(W, pca = FALSE, perplexity=20, max_iter=5000)
-
-data.frame(Dim1=tsne_data$Y[,1], Dim2=tsne_data$Y[,2], 
-           skin_type=colData(zinbwave_cov)$skin_type,
-           coverage=colData(zinbwave_cov)$qc_coverage) %>%
-    ggplot(aes(Dim1, Dim2, colour=skin_type, shape=coverage)) + geom_point() + 
-    scale_color_brewer(type = "qual", palette = "Set1") + theme_classic()
-```
-
-### differential expression analysis
-```{r}
-
-```
-
-```{r deseq2}
-library(DESeq2)
-dds <- DESeqDataSet(zinbwave_cov, design = ~ skin_type)
-dds <- DESeq(dds, sfType = "poscounts", useT = T, minmu = 1e-6)
-res <- lfcShrink(dds, coef = "skin_type_LS_vs_NL") 
-
-res_zinbwave_deseq2 <- 
-  res %>% as_tibble(rownames = "feature") %>% 
-  filter(pvalue < .05, abs(log2FoldChange) > 1) %>% 
-  mutate(direction = ifelse(log2FoldChange > 0, "up", "down")) %>% 
-  group_by(direction) %>% nest
-res_zinbwave_deseq2 %>% calc_accuracy()
-```
-
-```{r}
-se_zinbwave["FAM126B",] %>% 
-  as_tibble() %>% 
-  ggplot(aes(skin_type, counts)) +
-  geom_boxplot() + geom_point()
-```
-
-
-```{r}
-library(NOISeq)
-mydata <- readData(data = se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2),
-                 factors = colData(se_ad_q34)
-)
-
-mynoiseq <-
-  noiseq(mydata, k=0.5, norm = "n",
-         factor = "skin_type", lc = 1,
-         conditions = c("LS", "NL"))
-         # replicates = "biological")
-```
-
-```{r}
-noiseq_res <-
-  mynoiseq@results[[1]] %>% as_tibble(rownames = "feature") %>%
-  mutate(abs_ranking = abs(ranking),
-         direction = ifelse(M < 0, "up", "down")) %>%
-  slice_max(abs_ranking, prop = 0.05)
-
-noiseq_res %>% 
-  group_by(direction) %>% nest %>% 
-  calc_accuracy()
+ggsave("../data/pca.jpeg", pca_plot, width = 6, height = 5)
 ```
 
 

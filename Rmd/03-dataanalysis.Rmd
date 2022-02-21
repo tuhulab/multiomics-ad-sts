@@ -15,18 +15,16 @@ pacman::p_load("tidybulk", "tidySummarizedExperiment",
 
 core_n <- future::availableCores()
 register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
+set.seed(0111)
 ```
 
 
 ## Load data
-
 ```{r se}
 se_qc <- readr::read_rds("../data/se_qc.rds") # se w. qc information
-
 se_ad_q34 <- 
   se_qc[, (se_qc$qc_0_4 > 2) & (se_qc$group == "AD")]
 se_ad_q34$skin_type <- se_ad_q34$skin_type %>% droplevels() # remove level HC
-
 ```
 
 ```{r reference data}
@@ -37,7 +35,7 @@ reference <-
 
 ## DE 
 
-### edgeR + RLM, TMM, TMMwsp
+### edgeR + RLM, TMM, TMMwsp, DESeq2
 
 ```{r DE test: RLE TMM TMMwsp VST transformed}
 dge_ad_qc34 <- 
@@ -50,20 +48,24 @@ dge_ad_qc34 <-
                               scaling_method = "TMM") %>% 
   test_differential_abundance(~ skin_type + subject_id, 
                               prefix = "TMMwsp",
-                              scaling_method = "TMMwsp")
+                              scaling_method = "TMMwsp") %>% 
+  test_differential_abundance(~ skin_type + subject_id,
+                              prefix = "DESeq2",
+                              method = "deseq2")
 
 dge_ad_qc34_result <- 
   dge_ad_qc34 %>% pivot_transcript() %>% 
   select(feature, 
          RLElogFC, RLEPValue, RLEFDR, 
          TMMlogFC, TMMPValue, TMMFDR, 
-         TMMwsplogFC, TMMwspPValue, TMMwspFDR) %>% 
+         TMMwsplogFC, TMMwspPValue, TMMwspFDR,
+         DESeq2log2FoldChange, DESeq2pvalue, DESeq2padj) %>% 
   pivot_longer(cols = -feature, names_to = "parameter") %>% 
-  mutate(test = parameter %>% str_extract("RLE|TMMwsp|TMM")) %>% 
+  mutate(test = parameter %>% str_extract("RLE|TMMwsp|TMM|DESeq2")) %>% 
   mutate(parameter = case_when(
-    parameter %in% c("RLElogFC", "TMMlogFC", "TMMwsplogFC") ~ "logFC",
-    parameter %in% c("RLEPValue", "TMMPValue", "TMMwspPValue") ~ "p",
-    parameter %in% c("RLEFDR", "TMMFDR", "TMMwspFDR") ~ "padj_FDR"
+    parameter %in% c("RLElogFC", "TMMlogFC", "TMMwsplogFC", "DESeq2log2FoldChange") ~ "logFC",
+    parameter %in% c("RLEPValue", "TMMPValue", "TMMwspPValue", "DESeq2pvalue") ~ "p",
+    parameter %in% c("RLEFDR", "TMMFDR", "TMMwspFDR", "DESeq2padj") ~ "padj_FDR"
   )) %>% 
   pivot_wider(names_from = parameter) %>% 
   mutate(direction = ifelse(logFC > 0, "up", "down"))
@@ -76,14 +78,6 @@ limma_voom <-
   test_differential_abundance(~ skin_type + subject_id, 
                               prefix = "limma",
                               method = "limma_voom")
-
-limma_voom_res <-
-  limma_voom %>% pivot_transcript() %>% 
-  filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
-  mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
-  group_by(direction) %>% nest()
-
-calc_accuracy(limma_voom_res)
 ```
 
 ### limma voom with quality weight
@@ -95,14 +89,6 @@ limma_voom_sample_weight <-
                               prefix = "limma",
                               method = "limma_voom_sample_weights", 
                               scaling_method = "TMM")
-
-limma_voom_sample_weight_res <-
-  limma_voom_sample_weight %>% pivot_transcript() %>% 
-  filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
-  mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
-  group_by(direction) %>% nest()
-
-calc_accuracy(limma_voom_sample_weight_res)
 ```
 
 ### ZINB-WaVE edgeR
@@ -113,38 +99,54 @@ zinbwave_cov <- zinbwave(se_ad_q34, K=2,
                          X = "~ qc_coverage",
                          epsilon=1e12,
                          observationalWeights = TRUE)
-
 zinbwave_weights <- assay(zinbwave_cov, "weights")
-
 dge_zinbwave <- DGEList(assay(se_ad_q34))
 dge_zinbwave <- calcNormFactors(dge_zinbwave)
-
 design_zinbwave <- model.matrix(~skin_type, data = colData(se_ad_q34))
-
 dge_zinbwave$weights <- zinbwave_weights
 dge_zinbwave <- estimateDisp(dge_zinbwave, design_zinbwave)
 fit_zinbwave <- glmFit(dge_zinbwave, design_zinbwave)
 lrt_zinbwave <- glmWeightedF(fit_zinbwave, coef = "skin_typeLS")
-
-zinbwave_res <- 
-  topTags(lrt_zinbwave, n = Inf) %>% data.frame() %>% 
-  as_tibble(rownames = "feature") %>% 
-  filter(PValue < .05, abs(logFC) > 1) %>% mutate(direction = ifelse(logFC > 0, "up", "down")) %>% 
-  group_by(direction) %>% nest()
 ```
 
 ### ZINB-WavE DESeq2
 ```{r}
-
 dds_zinbwave <- DESeqDataSet(zinbwave_cov, design = ~ skin_type)
 dds_zinbwave <- DESeq(dds_zinbwave, sfType = "poscounts", useT = T, minmu = 1e-6)
 res_zinbwave <- lfcShrink(dds_zinbwave, coef = "skin_type_LS_vs_NL") 
+```
 
-res_zinbwave_deseq2 <- 
-  res_zinbwave %>% as_tibble(rownames = "feature") %>% 
-  filter(pvalue < .05, abs(log2FoldChange) > 1) %>% 
-  mutate(direction = ifelse(log2FoldChange > 0, "up", "down")) %>% 
-  group_by(direction) %>% nest
+### MT
+```{r}
+se_MT <- readr::read_rds("../data/se_qc_wMT.rds")
+se_MT <- se_MT[,se_MT$group == "AD"]
+se_MT$skin_type <- se_MT$skin_type %>% droplevels() # remove level HC
+
+MT_NF <- 
+  rep(se_MT[rownames(se_MT) %>% str_detect("MT-"), ] %>% assay() %>% colSums(), 
+    nrow(se_MT)) %>% 
+  matrix(nrow = nrow(se_MT), byrow = T)
+
+se_MT_normalized <- se_MT
+assay(se_MT_normalized) <- assay(se_MT) / MT_NF
+
+se_MT_normalized_DE <- 
+  se_MT %>% 
+  test_differential_abundance(~ skin_type + subject_id,
+                              scaling_method = "none")
+```
+
+### NOISeq
+```{r}
+library(NOISeq)
+mydata <- readData(data = se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2),
+                 factors = colData(se_ad_q34)
+)
+
+mynoiseq <-
+  noiseq(mydata, k=0.5, norm = "n",
+         factor = "skin_type", lc = 1,
+         conditions = c("NL", "LS"))
 ```
 
 
@@ -163,7 +165,21 @@ calc_accuracy <-
     
     DE_w_total_a <- length(DE_up) * mean(DE_up_a) / (length(DE_up) + length(DE_down)) + length(DE_down) * mean(DE_down_a) / (length(DE_up) + length(DE_down))
     
-    result <- c("up" = sum(DE_up_a), "down" = sum(DE_down_a), "total" = DE_w_total_a)
+    result <- list("DEG_up" = length(DE_up), 
+                   "DEG_down" = length(DE_down), 
+                   "DEG_total" = length(DE_up) + length(DE_down),
+                   "Accuracy" = scales::label_percent(accuracy = .01)(DE_w_total_a),
+                   "True_positive_up" = sum(DE_up_a),
+                   "True_positive_down" = sum(DE_down_a),
+                   "result_1" = paste0(
+                     length(DE_up) + length(DE_down),
+                     " (", length(DE_up), "/", length(DE_down), ")"),
+                   "result_2" = paste0(
+                     scales::label_percent(accuracy = .01)(DE_w_total_a),
+                     " (", sum(DE_up_a), "/", sum(DE_down_a), ")"),
+                   "gene_up" = DE_up[DE_up_a],
+                   "gene_down" = DE_down[DE_down_a]
+                   )
     return(result)
     }
 
@@ -172,40 +188,227 @@ calc_accuracy <-
 ### edgeR (RLE)
 ```{r RLE}
 RLE <- 
-  dge_ad_qc34_result %>% filter(test == "RLE") %>% filter(abs(logFC) > 1, padj_FDR < .05) %>% 
+  dge_ad_qc34_result %>% 
+  filter(test == "RLE") %>% filter(abs(logFC) > 1, padj_FDR < .05) %>% 
   group_by(direction) %>% nest()
-calc_accuracy(RLE)
+RLE_res <- calc_accuracy(RLE)
 ```
 
-
-```{r limma}
-
-calc_accuracy(limma)
+### edgeR (TMM)
+```{r TMM}
+TMM <- 
+  dge_ad_qc34_result %>% 
+  filter(test == "TMM") %>% filter(abs(logFC) > 1, p < .05) %>% 
+  group_by(direction) %>% nest()
+TMM_res <- calc_accuracy(TMM)
 ```
 
+### edgeR (TMMwsp)
+```{r TMMswp}
+TMMwsp <- 
+  dge_ad_qc34_result %>% 
+  filter(test == "TMMwsp") %>% filter(abs(logFC) > 1, p < .05) %>% 
+  group_by(direction) %>% nest()
+TMMwsp_res <- calc_accuracy(TMMwsp)
+```
 
-## noiseq
+### Zinb-wave
+```{r ZINB-Wave-edgeR glm weighted F}
+zinbwave <- 
+  topTags(lrt_zinbwave, n = Inf) %>% data.frame() %>% 
+  as_tibble(rownames = "feature") %>% 
+  filter(PValue < .05, abs(logFC) > 1) %>% 
+  mutate(direction = ifelse(logFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
+zinbwave_res <- calc_accuracy(zinbwave)
+```
+
+```{r ZINB-Wave deseq2}
+zinbwave_deseq2 <- 
+  res_zinbwave %>% as_tibble(rownames = "feature") %>% 
+  filter(pvalue < .05, abs(log2FoldChange) > 1) %>% 
+  mutate(direction = ifelse(log2FoldChange > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest
+zinbwave_deseq2_res <- calc_accuracy(zinbwave_deseq2)
+```
+
+### limma 
+
+#### voom
+```{r limma voom res}
+limma_voom_1 <-
+  limma_voom %>% pivot_transcript() %>% 
+  filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
+  mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
+limma_voom_res <- calc_accuracy(limma_voom_1)
+```
+
+#### voom w. sample quality weight
+```{r voom w. quality weight res}
+limma_voom_sample_weight_1 <-
+  limma_voom_sample_weight %>% pivot_transcript() %>% 
+  filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
+  mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
+limma_voom_sample_weight_res <-
+  calc_accuracy(limma_voom_sample_weight_1)
+```
+
+### MT
 ```{r}
-library(NOISeq)
-mydata <- readData(data = se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2),
-                 factors = colData(se_ad_q34)
-)
+MT_edgeR <- se_MT_normalized_DE %>% pivot_transcript() %>% 
+  filter(abs(logFC) > 1, PValue < .05) %>% 
+  mutate(direction = ifelse(logFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
 
-mynoiseq <-
-  noiseq(mydata, k=0.5, norm = "n",
-         factor = "skin_type", lc = 1,
-         conditions = c("NL", "LS"))
+MT_edgeR_res <- MT_edgeR %>% calc_accuracy()
+```
 
+### DESeq2
+```{r}
+DESeq2 <- 
+  dge_ad_qc34_result %>% 
+  filter(test == "DESeq2") %>% filter(abs(logFC) > 1, padj_FDR < .05) %>% 
+  group_by(direction) %>% nest()
+
+DESeq2_res <- calc_accuracy(DESeq2)
+```
+
+### noiseq
+```{r}
 noiseq_res <-
   mynoiseq@results[[1]] %>% as_tibble(rownames = "feature") %>%
   mutate(abs_ranking = abs(ranking),
-         direction = ifelse(M < 0, "up", "down")) %>%
-  slice_max(-ranking, prop = 0.05)
+         direction = ifelse(M < 0, "up", "down"))
 
-noiseq_res_deq <- noiseq_res$feature
-noiseq_res_deq[noiseq_res_deq %in% reference$gene_name]
+noiseq_res_top5p <-
+  noiseq_res %>% 
+  slice_max(abs(ranking), prop = 0.05) %>% 
+  group_by(direction) %>% nest()
+
+noiseq_res_top5p_res <- 
+  noiseq_res_top5p %>% calc_accuracy()
+
+noiseq_res_top20 <-
+  noiseq_res %>% 
+  slice_max(-ranking, n = 20)
+
+noiseq_res_top20_res <-
+  list("result_1" = 
+         paste0(20," (", sum(noiseq_res_top20$feature %in% reference$gene_name), "/", 0, ")"),
+       "result_2" = 
+         paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top20$feature %in% reference$gene_name)), 
+                           " (", sum(noiseq_res_top20$feature %in% reference$gene_name), "/", 0, ")"),
+       "gene_up" = 
+         noiseq_res_top20$feature[noiseq_res_top20$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
+
+
+
+noiseq_res_top10 <-
+  noiseq_res %>% 
+  slice_max(-ranking, n = 10)
+noiseq_res_top10_res <-
+  list("result_1" = paste0(10," (", sum(noiseq_res_top10$feature %in% reference$gene_name), "/", 0, ")"),
+       "result_2" = paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top10$feature %in% reference$gene_name)), 
+                           " (", sum(noiseq_res_top20$feature %in% reference$gene_name), "/", 0, ")"),
+       "gene_up" = 
+         noiseq_res_top10$feature[noiseq_res_top10$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
 ```
 
+## Table
+```{r table}
+table <- tibble(
+  transformation = c("RLE", "TMM", "TMMwsp", 
+                     "ZINB-Wave", "ZINB-Wave", 
+                     "Voom-trend on TMM data", 
+                     "Voom-trend with quality weight on TMM data", 
+                     "Mitochondrial as house-keeping genes", 
+                     "VST",
+                     rep("TMMwsp", 3)),
+  DE_testing = c(rep("edgeR glm fit", 3),
+                 "edgeR glm weighted F", "DESeq2", rep("limma", 2),
+                 "edgeR", "DESeq2", 
+                 rep("NOIseq (non-parametric testing)", 3)),
+  DE_cutoff = c("FC > 1, padj < 0.05", 
+                rep("FC > 1, p < 0.05", 6),
+                "FC > 1, padj < 0.05",
+                "FC > 1, p < 0.05",
+                rep("Top-5% ranked"),
+                rep("Top-20 ranked upregulated"),
+                rep("Top-10 ranked upregulated")
+                ),
+  `No. DEG (LSvsNL) total (up/down)` = 
+    c(RLE_res$result_1,
+      TMM_res$result_1,
+      TMMwsp_res$result_1,
+      zinbwave_res$result_1,
+      zinbwave_deseq2_res$result_1,
+      limma_voom_res$result_1,
+      limma_voom_sample_weight_res$result_1,
+      MT_edgeR_res$result_1,
+      DESeq2_res$result_1,
+      noiseq_res_top5p_res$result_1,
+      noiseq_res_top20_res$result_1,
+      noiseq_res_top10_res$result_1
+      ),
+  `Accuracy (up/down)` = 
+    c(RLE_res$result_2,
+      TMM_res$result_2,
+      TMMwsp_res$result_2,
+      zinbwave_res$result_2,
+      zinbwave_deseq2_res$result_2,
+      limma_voom_res$result_2,
+      limma_voom_sample_weight_res$result_2,
+      MT_edgeR_res$result_2,
+      DESeq2_res$result_2,
+      noiseq_res_top5p_res$result_2,
+      noiseq_res_top20_res$result_2,
+      noiseq_res_top10_res$result_2
+      ),
+  `Gene (overexpressed)` =
+    list(RLE_res$gene_up,
+      TMM_res$gene_up,
+      TMMwsp_res$gene_up,
+      zinbwave_res$gene_up,
+      zinbwave_deseq2_res$gene_up,
+      limma_voom_res$gene_up,
+      limma_voom_sample_weight_res$gene_up,
+      MT_edgeR_res$gene_up,
+      DESeq2_res$gene_up, 
+      noiseq_res_top5p_res$gene_up,
+      noiseq_res_top20_res$gene_up,
+      noiseq_res_top10_res$gene_up),
+    `Gene (downexpressed)` =
+    list(RLE_res$gene_down,
+      TMM_res$gene_down,
+      TMMwsp_res$gene_down,
+      zinbwave_res$gene_down,
+      zinbwave_deseq2_res$gene_down,
+      limma_voom_res$gene_down,
+      limma_voom_sample_weight_res$gene_down,
+      MT_edgeR_res$gene_down,
+      DESeq2_res$gene_down, 
+      noiseq_res_top5p_res$gene_down,
+      "","")
+)
+# table %>% openxlsx::write.xlsx("../data/benchmark.xlsx")
+DT::datatable(table)
+```
 
+```{r upset}
+library(ComplexHeatmap)
+upset_table <- table[c(2,3,6,7,8,10,11,12),]
 
+lt <- upset_table$`Gene (overexpressed)`
+names(lt) <- 
+  paste(upset_table$transformation)
+names(lt)[3] <- "Voom-trend"
+names(lt)[4] <- "Voom-trend w. QW"
+names(lt)[5] <- "Mitochondrial"
+names(lt)[6:8] <- c("NOIseq-top5%", "NOIseq-top20", "NOIseq-top10")
+
+lt_upset <- list_to_matrix(lt) %>% make_comb_mat()
+UpSet(lt_upset, comb_order = order(comb_size(lt_upset), decreasing = T))
+```
 
