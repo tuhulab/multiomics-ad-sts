@@ -413,6 +413,6 @@ UpSet(lt_upset, comb_order = order(comb_size(lt_upset), decreasing = T))
 ```
 
 ```{r save, eval=FALSE}
-saveRDS(table, "../data/benchmark_table.rds")
+saveRDS(table, "../data/benchmark_table_LSvsNL.rds")
 ```
 
