@@ -11,7 +11,7 @@ pacman::p_load("tidybulk", "tidySummarizedExperiment",
                "tidyr", "dplyr", "stringr",
                "limma", "SummarizedExperiment", 
                "DESeq2", "BiocParallel",
-               "tibble")
+               "tibble", "NOISeq")
 
 core_n <- future::availableCores()
 register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
@@ -19,13 +19,19 @@ set.seed(0111)
 ```
 
 
-## Load data - LS vs HC
+## Load data - LS vs HC | NL vs HC 
 ```{r se}
 se_qc <- readr::read_rds("../data/se_qc.rds") # se w. qc information
+
 se_q34_LSvsHC <- 
   se_qc[, (se_qc$qc_0_4 > 2) & (se_qc$skin_type %in% c("LS", "HC"))]
 se_q34_LSvsHC$skin_type <- se_q34_LSvsHC$skin_type %>% droplevels() # remove level HC
+
+se_q34_NLvsHC <- 
+  se_qc[, (se_qc$qc_0_4 > 2) & (se_qc$skin_type %in% c("NL", "HC"))]
+se_q34_NLvsHC$skin_type <- se_q34_NLvsHC$skin_type %>% droplevels() # remove level HC
 ```
+
 
 ```{r reference data}
 reference <-
@@ -37,8 +43,13 @@ reference <-
 
 ### limma voom
 ```{r limma-voom}
-limma_voom <-
+limma_voom_LSvsHC <-
   se_q34_LSvsHC %>% 
+  test_differential_abundance(~ skin_type + gender, 
+                              prefix = "limma",
+                              method = "limma_voom")
+limma_voom_NLvsHC <-
+  se_q34_NLvsHC %>% 
   test_differential_abundance(~ skin_type + gender, 
                               prefix = "limma",
                               method = "limma_voom")
@@ -47,8 +58,15 @@ limma_voom <-
 ### limma voom with quality weight
 
 ```{r}
-limma_voom_sample_weight <-
+limma_voom_sample_weight_LSvsHC <-
   se_q34_LSvsHC %>% 
+  test_differential_abundance(~ skin_type + gender, 
+                              prefix = "limma",
+                              method = "limma_voom_sample_weights", 
+                              scaling_method = "TMM")
+
+limma_voom_sample_weight_NLvsHC <-
+  se_q34_NLvsHC %>% 
   test_differential_abundance(~ skin_type + gender, 
                               prefix = "limma",
                               method = "limma_voom_sample_weights", 
@@ -58,33 +76,42 @@ limma_voom_sample_weight <-
 
 ### NOISeq
 ```{r}
-library(NOISeq)
-mydata <- readData(data = se_q34_LSvsHC %>% scale_abundance(method = "TMMwsp") %>% assay(2),
-                 factors = colData(se_q34_LSvsHC)
+NOISeq_data_LSvsHC <- 
+  readData(data = se_q34_LSvsHC %>% 
+             scale_abundance(method = "TMMwsp") %>% assay(2),
+           factors = colData(se_q34_LSvsHC)
 )
 
-mynoiseq <-
-  noiseq(mydata, k=0.5, norm = "n",
+NOISeq_data_NLvsHC <- 
+  readData(data = se_q34_NLvsHC %>% 
+             scale_abundance(method = "TMMwsp") %>% assay(2),
+           factors = colData(se_q34_NLvsHC)
+)
+
+
+mynoiseq_LSvsHC <-
+  noiseq(NOISeq_data_LSvsHC, k=0.5, norm = "n",
          factor = "skin_type", lc = 1,
          conditions = c("HC", "LS"))
+mynoiseq_NLvsHC <-
+  noiseq(NOISeq_data_NLvsHC, k=0.5, norm = "n",
+         factor = "skin_type", lc = 1,
+         conditions = c("HC", "NL"))
 ```
 
 
 ## calc accuracy
 ```{r fun calculate accuracy}
 calc_accuracy <-
-  function(DE, DE_ref = reference){
-    DE_ref_up <- DE_ref %>% filter(contrast == "LSvsHC", direction == "up") %>% pull(gene_name)
-    DE_ref_down <- DE_ref %>% filter(contrast == "LSvsHC", direction == "down") %>% pull(gene_name)
-    
+  function(DE, DE_ref = reference, 
+           contrast_to_compare){
+    DE_ref_up <- DE_ref %>% filter(contrast == contrast_to_compare, direction == "up") %>% pull(gene_name)
+    DE_ref_down <- DE_ref %>% filter(contrast == contrast_to_compare, direction == "down") %>% pull(gene_name)
     DE_up <- DE$data[DE$direction == "up"][[1]] %>% pull(feature)
     DE_down <- DE$data[DE$direction == "down"][[1]] %>% pull(feature)
-    
     DE_up_a <- DE_up %in% (DE_ref_up)
     DE_down_a <- DE_down %in% (DE_ref_down)
-    
     DE_w_total_a <- length(DE_up) * mean(DE_up_a) / (length(DE_up) + length(DE_down)) + length(DE_down) * mean(DE_down_a) / (length(DE_up) + length(DE_down))
-    
     result <- list("DEG_up" = length(DE_up), 
                    "DEG_down" = length(DE_down), 
                    "DEG_total" = length(DE_up) + length(DE_down),
@@ -101,7 +128,30 @@ calc_accuracy <-
                    "gene_down" = DE_down[DE_down_a]
                    )
     return(result)
-    }
+  }
+
+calc_accuracy_up <-
+  function(DE, DE_ref = reference, 
+           contrast_to_compare){
+    DE_ref_up <- DE_ref %>% filter(contrast == contrast_to_compare, direction == "up") %>% pull(gene_name)
+
+    DE_up <- DE$data[DE$direction == "up"][[1]] %>% pull(feature)
+    DE_up_a <- DE_up %in% (DE_ref_up)
+
+    result <- list("DEG_up" = length(DE_up), 
+                   "DEG_total" = length(DE_up),
+                   "Accuracy" = scales::label_percent(accuracy = .01)(mean(DE_up_a)),
+                   "True_positive_up" = sum(DE_up_a),
+                   "result_1" = paste0(
+                     length(DE_up) ,
+                     " (", length(DE_up), "/", 0, ")"),
+                   "result_2" = paste0(
+                     scales::label_percent(accuracy = .01)(mean(DE_up_a)),
+                     " (", sum(DE_up_a), "/", 0, ")"),
+                   "gene_up" = DE_up[DE_up_a]
+                   )
+    return(result)
+  }
 
 ```
 
@@ -110,128 +160,186 @@ calc_accuracy <-
 
 #### voom
 ```{r limma voom res}
-limma_voom_1 <-
-  limma_voom %>% pivot_transcript() %>% 
+limma_voom_LSvsHC_1 <-
+  limma_voom_LSvsHC %>% pivot_transcript() %>% 
   filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
   mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
   group_by(direction) %>% nest()
-limma_voom_res <- calc_accuracy(limma_voom_1)
+limma_voom_res_LSvsHC <- calc_accuracy(limma_voom_LSvsHC_1, contrast_to_compare = "LSvsHC")
+
+limma_voom_NLvsHC_1 <-
+  limma_voom_NLvsHC %>% pivot_transcript() %>% 
+  filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
+  mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
+limma_voom_res_NLvsHC <- 
+  calc_accuracy_up(limma_voom_NLvsHC_1, 
+                   contrast_to_compare = "NLvsHC")
 ```
 
 #### voom w. sample quality weight
 ```{r voom w. quality weight res}
-limma_voom_sample_weight_1 <-
-  limma_voom_sample_weight %>% pivot_transcript() %>% 
+limma_voom_sample_weight_LSvsHC_1 <-
+  limma_voom_sample_weight_LSvsHC %>% pivot_transcript() %>% 
   filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
   mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
   group_by(direction) %>% nest()
-limma_voom_sample_weight_res <-
-  calc_accuracy(limma_voom_sample_weight_1)
+limma_voom_sample_weight_res_LSvsHC <-
+  calc_accuracy(limma_voom_sample_weight_LSvsHC_1, contrast_to_compare = "LSvsHC")
+
+limma_voom_sample_weight_NLvsHC_1 <-
+  limma_voom_sample_weight_NLvsHC %>% pivot_transcript() %>% 
+  filter(abs(limmalogFC) > 1, limmaP.Value < .05) %>% 
+  mutate(direction = ifelse(limmalogFC > 0, "up", "down")) %>% 
+  group_by(direction) %>% nest()
+limma_voom_sample_weight_res_NLvsHC <-
+  calc_accuracy(limma_voom_sample_weight_NLvsHC_1, contrast_to_compare = "NLvsHC")
 ```
 
 ### noiseq
 ```{r}
-noiseq_res <-
-  mynoiseq@results[[1]] %>% as_tibble(rownames = "feature") %>%
+noiseq_res_LSvsHC <-
+  mynoiseq_LSvsHC@results[[1]] %>% as_tibble(rownames = "feature") %>%
   mutate(abs_ranking = abs(ranking),
          direction = ifelse(M < 0, "up", "down"))
-
-noiseq_res_top5p <-
-  noiseq_res %>% 
+noiseq_res_NLvsHC <-
+  mynoiseq_NLvsHC@results[[1]] %>% as_tibble(rownames = "feature") %>%
+  mutate(abs_ranking = abs(ranking),
+         direction = ifelse(M < 0, "up", "down"))
+noiseq_res_top5p_LSvsHC <-
+  noiseq_res_LSvsHC %>% 
   slice_max(abs(ranking), prop = 0.05) %>% 
   group_by(direction) %>% nest()
+noiseq_res_top5p_NLvsHC <-
+  noiseq_res_NLvsHC %>% 
+  slice_max(abs(ranking), prop = 0.05) %>% 
+  group_by(direction) %>% nest()
+noiseq_res_top5p_res_LSvsHC <- 
+  noiseq_res_top5p_LSvsHC %>% calc_accuracy(contrast_to_compare = "LSvsHC")
+noiseq_res_top5p_res_NLvsHC <- 
+  noiseq_res_top5p_NLvsHC %>% calc_accuracy(contrast_to_compare = "NLvsHC")
 
-noiseq_res_top5p_res <- 
-  noiseq_res_top5p %>% calc_accuracy()
+noiseq_res_top20_LSvsHC <-
+  noiseq_res_LSvsHC %>% slice_max(-ranking, n = 20)
+noiseq_res_top20_NLvsHC <-
+  noiseq_res_NLvsHC %>% slice_max(-ranking, n = 20)
 
-noiseq_res_top20 <-
-  noiseq_res %>% 
-  slice_max(-ranking, n = 20)
-
-noiseq_res_top20_res <-
+noiseq_res_top20_res_LSvsHC <-
   list("result_1" = 
-         paste0(20," (", sum(noiseq_res_top20$feature %in% reference$gene_name), "/", 0, ")"),
+         paste0(20," (", sum(noiseq_res_top20_LSvsHC$feature %in% reference$gene_name), "/", 0, ")"),
        "result_2" = 
-         paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top20$feature %in% reference$gene_name)), 
-                           " (", sum(noiseq_res_top20$feature %in% reference$gene_name), "/", 0, ")"),
+         paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top20_LSvsHC$feature %in% reference$gene_name)), 
+                           " (", sum(noiseq_res_top20_LSvsHC$feature %in% reference$gene_name), "/", 0, ")"),
        "gene_up" = 
-         noiseq_res_top20$feature[noiseq_res_top20$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
+         noiseq_res_top20_LSvsHC$feature[noiseq_res_top20_LSvsHC$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
+
+noiseq_res_top20_res_NLvsHC <-
+  list("result_1" = 
+         paste0(20," (", sum(noiseq_res_top20_NLvsHC$feature %in% reference$gene_name), "/", 0, ")"),
+       "result_2" = 
+         paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top20_NLvsHC$feature %in% reference$gene_name)), 
+                           " (", sum(noiseq_res_top20_NLvsHC$feature %in% reference$gene_name), "/", 0, ")"),
+       "gene_up" = 
+         noiseq_res_top20_NLvsHC$feature[noiseq_res_top20_NLvsHC$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
 
 
-
-noiseq_res_top10 <-
-  noiseq_res %>% 
+noiseq_res_top10_LSvsHC <-
+  noiseq_res_LSvsHC %>% 
   slice_max(-ranking, n = 10)
-noiseq_res_top10_res <-
-  list("result_1" = paste0(10," (", sum(noiseq_res_top10$feature %in% reference$gene_name), "/", 0, ")"),
-       "result_2" = paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top10$feature %in% reference$gene_name)), 
-                           " (", sum(noiseq_res_top10$feature %in% reference$gene_name), "/", 0, ")"),
-       "gene_up" = 
-         noiseq_res_top10$feature[noiseq_res_top10$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
+noiseq_res_top10_NLvsHC <-
+  noiseq_res_NLvsHC %>% 
+  slice_max(-ranking, n = 10)
+
+noiseq_res_top10_res_LSvsHC <-
+  list(
+    "result_1" = paste0(10," (", sum(noiseq_res_top10_LSvsHC$feature %in% reference$gene_name), "/", 0, ")"),
+    "result_2" = paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top10_LSvsHC$feature %in% reference$gene_name)), " (", sum(noiseq_res_top10_LSvsHC$feature %in% reference$gene_name), "/", 0, ")"),
+    "gene_up" = noiseq_res_top10_LSvsHC$feature[noiseq_res_top10_LSvsHC$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
+
+noiseq_res_top10_res_NLvsHC <-
+  list(
+    "result_1" = paste0(10," (", sum(noiseq_res_top10_NLvsHC$feature %in% reference$gene_name), "/", 0, ")"),
+    "result_2" = paste0(scales::label_percent(accuracy = .01)(mean(noiseq_res_top10_NLvsHC$feature %in% reference$gene_name)), " (", sum(noiseq_res_top10_NLvsHC$feature %in% reference$gene_name), "/", 0, ")"),
+    "gene_up" = noiseq_res_top10_NLvsHC$feature[noiseq_res_top10_NLvsHC$feature %in% (reference %>% filter(direction == "up") %>% pull(gene_name))])
+
 ```
 
 ## Table
 ```{r table}
-table <- tibble(
-  transformation = c("Voom-trend on TMM data", 
+table_LSvsHC_NLvsHC <- tibble(
+  contrast = c(rep("LSvsHC", 5),
+               rep("NLvsHC", 5)),
+  transformation = 
+    rep(c("Voom-trend on TMM data", 
                      "Voom-trend with quality weight on TMM data", 
-                     rep("TMMwsp", 3)),
-  DE_testing = c(rep("limma", 2),
-                 rep("NOIseq (non-parametric testing)", 3)),
-  DE_cutoff = c(rep("FC > 1, p < 0.05", 2),
+                     rep("TMMwsp", 3)), 2),
+  DE_testing = 
+    rep(c(rep("limma", 2),
+          rep("NOIseq (non-parametric testing)", 3)), 2),
+  DE_cutoff = 
+    rep(c(rep("FC > 1, p < 0.05", 2),
                 rep("Top-5% ranked"),
                 rep("Top-20 ranked upregulated"),
                 rep("Top-10 ranked upregulated")
-                ),
-  `No. DEG (LSvsNL) total (up/down)` = 
-    c(limma_voom_res$result_1,
-      limma_voom_sample_weight_res$result_1,
-      noiseq_res_top5p_res$result_1,
-      noiseq_res_top20_res$result_1,
-      noiseq_res_top10_res$result_1
+                ), 2),
+  `No. DEG total (up/down)` = 
+    c(limma_voom_res_LSvsHC$result_1,
+      limma_voom_sample_weight_res_LSvsHC$result_1,
+      noiseq_res_top5p_res_LSvsHC$result_1,
+      noiseq_res_top20_res_LSvsHC$result_1,
+      noiseq_res_top10_res_LSvsHC$result_1,
+      limma_voom_res_NLvsHC$result_1,
+      limma_voom_sample_weight_res_NLvsHC$result_1,
+      noiseq_res_top5p_res_NLvsHC$result_1,
+      noiseq_res_top20_res_NLvsHC$result_1,
+      noiseq_res_top10_res_NLvsHC$result_1
       ),
   `Accuracy (up/down)` = 
-    c(limma_voom_res$result_2,
-      limma_voom_sample_weight_res$result_2,
-      noiseq_res_top5p_res$result_2,
-      noiseq_res_top20_res$result_2,
-      noiseq_res_top10_res$result_2
+    c(limma_voom_res_LSvsHC$result_2,
+      limma_voom_sample_weight_res_LSvsHC$result_2,
+      noiseq_res_top5p_res_LSvsHC$result_2,
+      noiseq_res_top20_res_LSvsHC$result_2,
+      noiseq_res_top10_res_LSvsHC$result_2,
+      limma_voom_res_NLvsHC$result_2,
+      limma_voom_sample_weight_res_NLvsHC$result_2,
+      noiseq_res_top5p_res_NLvsHC$result_2,
+      noiseq_res_top20_res_NLvsHC$result_2,
+      noiseq_res_top10_res_NLvsHC$result_2
       ),
   `Gene (overexpressed)` =
     list(
-      limma_voom_res$gene_up,
-      limma_voom_sample_weight_res$gene_up,
-      noiseq_res_top5p_res$gene_up,
-      noiseq_res_top20_res$gene_up,
-      noiseq_res_top10_res$gene_up),
+      limma_voom_res_LSvsHC$gene_up,
+      limma_voom_sample_weight_res_LSvsHC$gene_up,
+      noiseq_res_top5p_res_LSvsHC$gene_up,
+      noiseq_res_top20_res_LSvsHC$gene_up,
+      noiseq_res_top10_res_LSvsHC$gene_up,
+      limma_voom_res_NLvsHC$gene_up,
+      limma_voom_sample_weight_res_NLvsHC$gene_up,
+      noiseq_res_top5p_res_NLvsHC$gene_up,
+      noiseq_res_top20_res_NLvsHC$gene_up,
+      noiseq_res_top10_res_NLvsHC$gene_up),
     `Gene (downexpressed)` =
-    list(limma_voom_res$gene_down,
-      limma_voom_sample_weight_res$gene_down,
-      noiseq_res_top5p_res$gene_down,
+    list(
+      limma_voom_res_LSvsHC$gene_down,
+      limma_voom_sample_weight_res_LSvsHC$gene_down,
+      noiseq_res_top5p_res_LSvsHC$gene_down,
+      "","",
+      limma_voom_res_NLvsHC$gene_down,
+      limma_voom_sample_weight_res_NLvsHC$gene_down,
+      noiseq_res_top5p_res_NLvsHC$gene_down,
       "","")
 )
-# table %>% openxlsx::write.xlsx("../data/benchmark.xlsx")
-DT::datatable(table)
+
+benchmark_table <- 
+  readRDS("../data/benchmark_table_LSvsNL.rds") %>% 
+  mutate(contrast = "LSvsNL") %>% 
+  rename(`No. DEG total (up/down)` = `No. DEG (LSvsNL) total (up/down)`) %>% 
+  select(contrast, !contrast) %>% 
+  bind_rows(table_LSvsHC_NLvsHC)
+# saveRDS(benchmark_table, "../data/benchmark_table.rds")
 ```
 
-```{r upset}
-library(ComplexHeatmap)
-upset_table <- table[c(2,3,6,7,8,10,11,12),]
 
-lt <- upset_table$`Gene (overexpressed)`
-names(lt) <- 
-  paste(upset_table$transformation)
-names(lt)[3] <- "Voom-trend"
-names(lt)[4] <- "Voom-trend w. QW"
-names(lt)[5] <- "Mitochondrial"
-names(lt)[6:8] <- c("NOIseq-top5%", "NOIseq-top20", "NOIseq-top10")
 
-lt_upset <- list_to_matrix(lt) %>% make_comb_mat()
-UpSet(lt_upset, comb_order = order(comb_size(lt_upset), decreasing = T))
-```
-
-```{r save, eval=FALSE}
-saveRDS(table, "../data/benchmark_table.rds")
-```
 
 

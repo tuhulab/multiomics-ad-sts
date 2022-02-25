@@ -1,0 +1,107 @@
+---
+title: "05-AD_signature"
+author: "Tu Hu"
+date: "2/24/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load("dplyr", "tidyr", "purrr", "tidybulk", "tidySummarizedExperiment",
+               "ComplexHeatmap", "ggplot2")
+```
+
+## AD signature
+```{r load benchmark data}
+benchmark <- 
+  readRDS("../data/benchmark_table.rds") %>% group_by(contrast) %>% nest %>% 
+  mutate(gene_up = map(data, ~ .x$`Gene (overexpressed)` %>% unlist %>% unique %>% discard(~.x == "")),
+         gene_down = map(data, ~ .x$`Gene (downexpressed)` %>% unlist %>% unique %>% discard(~.x == "")))
+
+
+
+se_qc <- readRDS("../data/se_qc.rds")
+se_qc_34 <- se_qc[,se_qc$qc_0_4 > 2]
+se_qc_cpm <- se_qc_34 %>% edgeR::cpmByGroup(group = se_qc_34$skin_type, log = T)
+
+gene_up <- benchmark$gene_up %>% unlist %>% unique
+gene_up_plot <- 
+  purrr::discard((se_qc_cpm[gene_up,3] > se_qc_cpm[gene_up,1]) & (se_qc_cpm[gene_up,3] > se_qc_cpm[gene_up,2]), ~.x == FALSE) %>% names
+
+gene_down <- benchmark$gene_down %>% unlist %>% unique
+gene_down_plot <- 
+  purrr::discard((se_qc_cpm[gene_down,3] < se_qc_cpm[gene_down,1]) & (se_qc_cpm[gene_down,3] < se_qc_cpm[gene_down,2]), ~.x == FALSE) %>% names
+
+library("gplots")
+
+jpeg("../data/heatmap_DEG.jpeg", width = 20, 
+     height = 30, units = "cm", res = 300)
+se_qc_cpm[c(gene_up_plot, gene_down_plot),] %>% t() %>% scale %>% t %>% heatmap.2(col = bluered(100), density.info = "none", trace = "none", dendrogram = "row", keysize = 1, margins = c(5,5), lhei = c(.8,7))
+dev.off()
+
+# gene_description <- 
+#   gprofiler2::gconvert(c(gene_up_plot, gene_down_plot)) %>% 
+#   as_tibble() %>% select(name, description)
+# openxlsx::write.xlsx(gene_description, "../data/gene_description.xlsx")
+```
+
+```{r heatmap}
+heatmap_data_m_top100 <-
+  scale(se_qc %>% edgeR::cpmByGroup(group = se_qc_up$skin_type) %>% t(), 
+        center = TRUE, scale = TRUE) %>% t()
+  # scale(se_qc_up %>% edgeR::cpm(log=T) %>% t(), 
+        # center = TRUE, scale = TRUE) %>% t()
+  # scale(assay(se_qc_up, 2) %>% t() %>% log1p(), 
+  #       center = TRUE, scale = TRUE) %>% t()
+
+sample_site_color <- 
+  colData(se_qc_up) %>% as_tibble() %>% pull(biopsy_area) %>% unique()
+
+color <- RColorBrewer::brewer.pal(length(sample_site_color), "Pastel2")
+names(color) <- sample_site_color
+
+heatmap_annotation <- 
+  HeatmapAnnotation(
+    `Tissue type` = colData(se_qc_up) %>% as_tibble() %>% pull(skin_type), 
+    `Anatomic region` = colData(se_qc_up) %>% as_tibble() %>% pull(biopsy_area),
+    col = list(`Tissue type` = c("LS" = "#eb2d0c", "NL" = "#eb8b9b", "HC" = "#91cf60"),
+               `Anatomic region` = color),
+    annotation_legend_param = 
+      list(`Tissue type` = list(nrow = 1, title_gp = gpar(fontsize = 12),
+                                labels_gp = gpar(fontsize = 10)),
+           `Anatomic region` = list(nrow = 1, title_gp = gpar(fontsize = 12),
+                                    labels_gp = gpar(fontsize = 10))
+                                   ))
+
+heatmap_top100 <- ComplexHeatmap::Heatmap(heatmap_data_m_top100,
+                        name = "gene expression",
+                        column_dend_reorder = TRUE,
+                        # clustering_method_columns = "complete",
+                        show_column_names = FALSE,
+                        show_row_names = TRUE,
+                        show_row_dend = FALSE,
+                        row_names_gp = gpar(fontsize = 9),
+                        top_annotation = heatmap_annotation,
+                        heatmap_legend_param = list(
+                          title_gp = gpar(fontsize = 12),
+                          labels_gp = gpar(fontsize = 10)
+                          ),
+                        # column_split = se_qc_up$skin_type,
+                        row_title_rot = 0, 
+                        row_title_side = "right")
+
+draw(heatmap_top100, heatmap_legend_side = "right",
+     annotation_legend_side = "top", merge_legend = FALSE)
+```
+
+```{r}
+se_qc_up %>% 
+  as_tibble() %>% 
+  group_by(skin_type, feature) %>% 
+  summarise(expr = mean(counts_scaled)) %>% 
+  tidyHeatmap::heatmap(feature, skin_type, expr, 
+                       palette_value = c("blue", "white", "red"))
+```
+
+
+

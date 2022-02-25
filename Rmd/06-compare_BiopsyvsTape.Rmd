@@ -1,0 +1,40 @@
+---
+title: "06-comparision_BiopsyvsTape"
+author: "Tu Hu"
+date: "2/25/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load data
+```{r}
+se_tape <- readRDS("../data/se_qc.rds")
+# se_tape <- se_tape[, se_tape$qc_0_4 > 2]
+
+se_biopsy <- readRDS("../../multiomics-ad-phd/data/se.rds")
+
+g_to_compare <-
+  rownames(se_tape)[rownames(se_tape) %in% rownames(se_biopsy)]
+```
+
+## Compare with biopsy
+```{r}
+se_tape_t <- 
+  se_tape[g_to_compare, ] %>% scale_abundance() %>% 
+  as_tibble() %>% 
+  group_by(subject_id, visit, skin_type, feature) %>% nest %>% 
+  mutate(data = map(data, ~ .x %>% summarise(expr = mean(counts_scaled))))
+```
+
+```{r}
+se_biopsy_t <-
+  se_biopsy[g_to_compare,] %>% 
+  as_tibble() %>% 
+  group_by(visit, subject, skin_type, feature) %>% nest() %>% 
+  mutate(data = map(data, ~.x %>% summarise(expr = mean(counts_scaled)))) %>% 
+  unnest(cols = c(data))
+```
+
