@@ -26,7 +26,9 @@ se_tape_t <-
   se_tape[g_to_compare, ] %>% scale_abundance() %>% 
   as_tibble() %>% 
   group_by(subject_id, visit, skin_type, feature) %>% nest %>% 
-  mutate(data = map(data, ~ .x %>% summarise(expr = mean(counts_scaled))))
+  mutate(data = map(data, ~ .x %>% summarise(expr = mean(counts_scaled)))) %>% 
+  unnest(cols = c(data))
+
 ```
 
 ```{r}
