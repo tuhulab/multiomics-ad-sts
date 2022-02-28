@@ -7,6 +7,13 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load("tidybulk", "tidySummarizedExperiment",
+               "tidyr", "dplyr", "stringr",
+               "limma", "SummarizedExperiment", 
+               "DESeq2", "BiocParallel",
+               "tibble")
+core_n <- future::availableCores()
+register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
 ```
 
 ## Load data
@@ -25,18 +32,45 @@ g_to_compare <-
 se_tape_t <- 
   se_tape[g_to_compare, ] %>% scale_abundance() %>% 
   as_tibble() %>% 
-  group_by(subject_id, visit, skin_type, feature) %>% nest %>% 
+  group_by(subject_id, visit, skin_type, .feature) %>% nest %>% 
   mutate(data = map(data, ~ .x %>% summarise(expr = mean(counts_scaled)))) %>% 
   unnest(cols = c(data))
 
 ```
 
-```{r}
-se_biopsy_t <-
-  se_biopsy[g_to_compare,] %>% 
-  as_tibble() %>% 
-  group_by(visit, subject, skin_type, feature) %>% nest() %>% 
-  mutate(data = map(data, ~.x %>% summarise(expr = mean(counts_scaled)))) %>% 
-  unnest(cols = c(data))
+```{r collapse libraries}
+se_biopsy_g_to_comapre <- se_biopsy[g_to_compare,]
+se_biopsy %>% colData()
+colData(se_biopsy_g_to_comapre)$subject_visit_skintype <- paste(colData(se_biopsy_g_to_comapre)$subject,
+                                                   colData(se_biopsy_g_to_comapre)$visit,
+                                                   colData(se_biopsy_g_to_comapre)$skin_type)
+sp_to_collapse <- colData(se_biopsy_g_to_comapre)$subject_visit_skintype
+
+expr_biopsy <- 
+  bplapply(1:length(sp_to_collapse),
+       function(sp){
+  index <- 
+    which(colData(se_biopsy_g_to_comapre)$subject_visit_skintype ==
+            sp_to_collapse[sp])
+  expr <- assay(se_biopsy_g_to_comapre, 2)[,index]
+  expr_mean <- if (length(index) > 1) {
+    rowMeans(expr)
+  } else {
+    expr
+  }
+  
+    # ifelse(length(index) > 1, rowMeans2(expr), expr) # why this does not work. I have no clue
+  # expr_mean <- rowMeans(expr)
+  return(expr_mean)
+})
+names(expr_biopsy) <- sp_to_collapse
+expr_biopsy_m <- 
+  expr_biopsy %>% reduce(bind_cols) %>% as.matrix()
+rownames(expr_biopsy_m) <- g_to_compare
+colnames(expr_biopsy_m) <- sp_to_collapse
+
+SummarizedExperiment(
+)
+
 ```
 
