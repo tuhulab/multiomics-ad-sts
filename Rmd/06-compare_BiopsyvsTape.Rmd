@@ -11,7 +11,7 @@ pacman::p_load("tidybulk", "tidySummarizedExperiment",
                "tidyr", "dplyr", "stringr",
                "limma", "SummarizedExperiment", 
                "DESeq2", "BiocParallel",
-               "tibble")
+               "tibble", "ggpubr", "purrr")
 core_n <- future::availableCores()
 register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
 ```
@@ -19,32 +19,70 @@ register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
 ## Load data
 ```{r}
 se_tape <- readRDS("../data/se_qc.rds")
-# se_tape <- se_tape[, se_tape$qc_0_4 > 2]
+se_tape <- se_tape[, se_tape$qc_0_4 > 2]
 
 se_biopsy <- readRDS("../../multiomics-ad-phd/data/se.rds")
 
 g_to_compare <-
   rownames(se_tape)[rownames(se_tape) %in% rownames(se_biopsy)]
+
+g_to_compare_FC <-
+  readRDS("../data/benchmark_table.rds") %>% group_by(contrast) %>% nest %>% 
+  mutate(gene_up = map(data, ~ .x$`Gene (overexpressed)` %>% unlist %>% unique %>% discard(~.x == "")),
+         gene_down = map(data, ~ .x$`Gene (downexpressed)` %>% unlist %>% unique %>% discard(~.x == ""))) %>% 
+  ungroup %>% 
+  select(gene_up, gene_down) %>% unlist %>% unique
 ```
 
-## Compare with biopsy
-```{r}
+## skin tape data
+```{r skin tape data matrix}
+colData(se_tape)$subject_visit <- 
+  str_c(colData(se_tape)$subject_id,
+        colData(se_tape)$visit, sep = "_")
+colData(se_tape)$subject_visit_skintype <- 
+  str_c(colData(se_tape)$subject_id,
+        colData(se_tape)$visit,
+        colData(se_tape)$skin_type, sep = "_")
 se_tape_t <- 
-  se_tape[g_to_compare, ] %>% scale_abundance() %>% 
-  as_tibble() %>% 
-  group_by(subject_id, visit, skin_type, .feature) %>% nest %>% 
-  mutate(data = map(data, ~ .x %>% summarise(expr = mean(counts_scaled)))) %>% 
-  unnest(cols = c(data))
-
+  se_tape[g_to_compare, ] %>% scale_abundance()
+expr_tape_m <-
+  assay(se_tape_t, 2)
+colnames(expr_tape_m) <-
+  colData(se_tape)$subject_visit_skintype
 ```
 
-```{r collapse libraries}
+```{r skin tape data - FC}
+se_tape_AD <- se_tape_t[, se_tape_t$skin_type %in% c("LS", "NL")]
+
+se_tape_AD_FC <- 
+  se_tape_AD[g_to_compare_FC, 
+             se_tape_AD$subject_visit %in% 
+               (se_tape_AD$subject_visit %>% table %>% 
+                  discard(~ .x == 1) %>% names)] %>% 
+  as_tibble() %>% 
+  mutate(counts_scaled = ifelse(counts_scaled == 0, .5, counts_scaled)) %>% 
+  arrange(skin_type) %>% 
+  group_by(subject_visit, feature) %>% nest %>% 
+  mutate(FC_tape = map_dbl(data, ~ log2(.x$counts_scaled[2] / .x$counts_scaled[1]))) %>% 
+  select(-data)
+```
+
+
+## biopsy data
+```{r collapse libraries, warning=FALSE}
 se_biopsy_g_to_comapre <- se_biopsy[g_to_compare,]
-se_biopsy %>% colData()
-colData(se_biopsy_g_to_comapre)$subject_visit_skintype <- paste(colData(se_biopsy_g_to_comapre)$subject,
-                                                   colData(se_biopsy_g_to_comapre)$visit,
-                                                   colData(se_biopsy_g_to_comapre)$skin_type)
-sp_to_collapse <- colData(se_biopsy_g_to_comapre)$subject_visit_skintype
+
+colData(se_biopsy_g_to_comapre)$subject_visit_skintype <- 
+  str_c(colData(se_biopsy_g_to_comapre)$subject,
+        colData(se_biopsy_g_to_comapre)$visit,
+        colData(se_biopsy_g_to_comapre)$skin_type, sep = "_")
+
+colData(se_biopsy_g_to_comapre)$subject_visit <- 
+  str_c(colData(se_biopsy_g_to_comapre)$subject,
+        colData(se_biopsy_g_to_comapre)$visit, sep = "_")
+
+sp_to_collapse <- 
+  colData(se_biopsy_g_to_comapre)$subject_visit_skintype %>% unique
 
 expr_biopsy <- 
   bplapply(1:length(sp_to_collapse),
@@ -58,19 +96,220 @@ expr_biopsy <-
   } else {
     expr
   }
-  
-    # ifelse(length(index) > 1, rowMeans2(expr), expr) # why this does not work. I have no clue
-  # expr_mean <- rowMeans(expr)
   return(expr_mean)
 })
 names(expr_biopsy) <- sp_to_collapse
 expr_biopsy_m <- 
-  expr_biopsy %>% reduce(bind_cols) %>% as.matrix()
+  expr_biopsy %>% purrr::reduce(bind_cols) %>% as.matrix()
 rownames(expr_biopsy_m) <- g_to_compare
 colnames(expr_biopsy_m) <- sp_to_collapse
+```
 
-SummarizedExperiment(
-)
+```{r skin biopsy FC}
+se_biopsy_AD_FC <-
+  expr_biopsy_m %>% as_tibble(rownames = "gene_name") %>% 
+  pivot_longer(cols = !gene_name, names_to = "subject_visit_skintype",
+               values_to = "counts") %>% 
+  mutate(counts = counts + .5) %>% 
+  filter(gene_name %in% g_to_compare_FC) %>% 
+  mutate(subject_visit = subject_visit_skintype %>% 
+           str_extract("(AD|CO)_\\d{2}_0\\d{1}"),
+         skin_type = subject_visit_skintype %>% 
+           str_extract("(LS|NL|HC)")) %>% 
+  arrange(skin_type) %>% 
+  group_by(subject_visit, gene_name) %>% nest %>% 
+  mutate(nrow = map_dbl(data, ~ .x %>% nrow)) %>% 
+  filter(nrow == 2) %>% 
+  mutate(FC = map_dbl(data, ~ log2(.x$counts[1] / .x$counts[2]) )) %>% 
+  select(feature = gene_name, subject_visit, FC_biopsy = FC)
+```
 
+### FC
+```{r warning=FALSE}
+FC_s_correlation <- 
+  se_tape_AD_FC %>% ungroup() %>% 
+  left_join(se_biopsy_AD_FC, by = c("feature", "subject_visit")) %>% 
+  filter(!is.na(FC_biopsy)) %>% group_by(subject_visit) %>% nest() %>% 
+  mutate(
+    cor_spearman = map(data, ~ cor.test(.x$FC_tape, .x$FC_biopsy, 
+                                        method = "spearman") %>% 
+                         broom::tidy())) %>% 
+  select(subject_visit, cor_spearman) %>% 
+  unnest
+```
+
+```{r warning=F}
+FC_g_correlation <- 
+  se_tape_AD_FC %>% ungroup() %>% 
+  left_join(se_biopsy_AD_FC, by = c("feature", "subject_visit")) %>% 
+  filter(!is.na(FC_biopsy)) %>% group_by(feature) %>% nest() %>% 
+  mutate(cor_spearman = map(data, ~ cor.test(.x$FC_tape, .x$FC_biopsy, 
+                                             method = "spearman") %>% broom::tidy())) %>% 
+  select(feature, cor_spearman) %>% unnest %>% 
+  arrange(-estimate)
+```
+
+
+## Correlation coefficient 
+
+### Sample
+
+```{r sample-wise correlation}
+tape_biopsy_s_res <- 
+  bplapply(which(colnames(expr_tape_m) %in% intersect(
+  colnames(expr_tape_m), colnames(expr_biopsy_m))), 
+  function(sp_index){
+  sp_name <- colnames(expr_tape_m)[sp_index]
+  tape_s <- expr_tape_m[,sp_name]
+  biopsy_s <- expr_biopsy_m[,sp_name]
+  # r_pearson <- cor.test(tape_s, biopsy_s, method = "pearson") %>% broom::tidy()
+  r_spearman_model <- 
+    cor.test(tape_s, biopsy_s, method = "spearman") %>% 
+    broom::tidy()
+  
+  rho <- r_spearman_model$estimate
+  p <- r_spearman_model$p.value
+  
+  r <- list("sample" = sp_name, 
+            # "r_pearson"= r_pearson, 
+            "r_spearman" = rho,
+            "p_value" = p)
+  return(r)
+})
+
+tape_biopsy_s_res_t <- 
+  tape_biopsy_s_res %>% purrr::reduce(bind_rows) %>% 
+  left_join(colData(se_tape) %>% as_tibble(), 
+            by = c("sample" = "subject_visit_skintype")) %>% 
+  group_by(skin_type)
+
+lm(r_spearman ~ log10(counts_sum) + skin_type, 
+   data = tape_biopsy_s_res_t) %>% 
+  broom::tidy()
+cor.test(tape_biopsy_s_res_t$r_spearman,
+         tape_biopsy_s_res_t$counts_sum)
+
+RNAyield_cor_g <-
+  tape_biopsy_s_res_t %>% 
+  rename(`Tissue source` = "skin_type") %>% 
+  ggscatter(y = "r_spearman", 
+            x = "counts_sum", 
+            color = "Tissue source",
+            palette = c("LS" = "#eb2d0c", 
+                        "NL" = "#eb8b9b", 
+                        "HC" = "#91cf60"), 
+            xscale = "log10", 
+            add = "reg.line",
+            add.params = list(color = "grey"),
+            ylab = "Correlation coefficient",
+            xlab = "RNA yield")
+
+ggsave("../figure/F4_RNAyield_cor.jpeg",
+       RNAyield_cor_g, width = 5, height = 5)
+```
+
+### Gene
+```{r gene-wise correlation}
+s_to_c <- intersect(colnames(expr_tape_m), colnames(expr_biopsy_m))
+expr_tape_m_a <- 
+  expr_tape_m[,s_to_c]
+expr_biopsy_m_a <-
+  expr_biopsy_m[,s_to_c]
+
+tape_biopsy_g_res <- 
+  bplapply(1:nrow(expr_tape_m_a),
+  function(g_index){
+  tape_g <- expr_tape_m_a[g_index,]
+  biopsy_g <- expr_biopsy_m_a[g_index,]
+  # r_pearson <- cor(tape_g, biopsy_g, method = "pearson")
+  r_spearman <- 
+    cor.test(tape_g, biopsy_g, method = "spearman") %>% broom::tidy()
+  r <- list("gene" = rownames(expr_tape_m_a)[g_index], 
+            # "r_pearson"= r_pearson, 
+            "r_spearman" = r_spearman)
+  return(r)
+})
+
+# fold-change -----------------
+
+
+
+
+
+# result    -------------------
+
+
+
+tape_biopsy_g_res_t <- 
+  tibble(gene = tape_biopsy_g_res %>% map_chr(~ .x $gene),
+         spearman_correlation_coefficient = tape_biopsy_g_res %>% map_dbl(~ .x $r_spearman$estimate),
+         p_value = tape_biopsy_g_res %>% map_dbl(~ .x $r_spearman$p.value))
+  
+
+
+
+
+tibble(
+  gene_name = rownames(expr_biopsy_m),
+  tape_s = log2(expr_tape_m[, "AD_25_05_LS"]),
+  biopsy_s = log2(expr_biopsy_m[, "AD_25_05_LS"])
+) %>% 
+ggplot(aes(tape_s, biopsy_s)) + geom_point() + 
+  geom_smooth(method = "lm")
+
+tibble(
+  # gene_name = "PSME1",
+  tape_s = log2(expr_tape_m_a["ALOX5AP",]),
+  biopsy_s = log2(expr_biopsy_m_a["ALOX5AP",])
+) %>% 
+  ggplot(aes(tape_s, biopsy_s)) + geom_point()
+
+
+```
+
+
+## Visualize
+
+```{r}
+tape_biopsy_expr <- 
+  bplapply(which(colnames(expr_tape_m) %in% intersect(
+  colnames(expr_tape_m), colnames(expr_biopsy_m))), 
+  function(sp_index){
+  sp_name <- colnames(expr_tape_m)[sp_index]
+  tape_s <- expr_tape_m[,sp_name]
+  biopsy_s <- expr_biopsy_m[,sp_name]
+  r <- list("sample" = sp_name, 
+            expr_tape = tape_s, 
+            expr_biopsy = biopsy_s)
+  return(r)
+})
+
+# tape_biopsy_expr %>% reduce(bind_rows) %>% 
+#   filter(sample == )
+```
+
+
+```{r}
+cor_group_g <-
+  tape_biopsy_s_res_t %>% 
+  ungroup %>% 
+  ggboxplot(x = "skin_type", 
+            y = "r_spearman", 
+            add = c("jitter"), 
+            fill = "skin_type",
+            palette = 
+              c("LS" = "#eb2d0c", 
+                "NL" = "#eb8b9b", 
+                "HC" = "#91cf60"),
+            legend = "none", 
+            xlab = "Tissue source",
+            ylab = "Correlation coefficient") + 
+  stat_compare_means(comparisons = list(
+    c("HC", "NL"),  
+    c("NL", "LS"),
+    c("HC", "LS")
+))  
+ggsave("../figure/correlation_group.jpeg",
+      cor_group_g, width = 5, height=5)
 ```
 

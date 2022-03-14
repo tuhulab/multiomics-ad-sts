@@ -217,6 +217,7 @@ lib_size_g
 lib_size_g %>% facet("batch") %>%  ggpar(font.xtickslab = "8")
 
 median_lib_size <- median(lib_size$lib_size)
+lib_size$lib_size %>% range
 ```
 
 We detected a low library sized in general, with median library size `r median_lib_size` and a large variation between RNA yield from each sample, as indicated by the total counts of each sample. However, between each BRB batch, we could not detect a batch effect. 
@@ -237,7 +238,7 @@ rna_yield_skin_type_g <-
             add = c("jitter"), 
             color = "skin_type",
             palette = pca_color,
-            xlab = "Skin type",
+            xlab = "Tissue source",
             ylab = "Total counts") +
   stat_compare_means(comparisons = list(
     c("HC", "NL"),
@@ -245,8 +246,8 @@ rna_yield_skin_type_g <-
     c("HC", "LS")
   ), methods= "t.test") +
   theme(legend.position = "none")
-# ggsave("../figure/RNA_yield_skin_type.jpeg", 
-#        width = 5, height = 5, units = "in", 
+# ggsave("../figure/RNA_yield_skin_type.jpeg",
+#        width = 5, height = 5, units = "in",
 #        rna_yield_skin_type_g)
 ```
 
@@ -420,10 +421,9 @@ gene_detection$feature[1:500] %>% writeLines("../_tmp/gene_expressed.txt")
 ## GLMPCA
 ```{r glmpca}
 ### PCA plot using generalized PCA
-library("glmpca")
+
 se_qc <- readr::read_rds("../data/se_qc.rds")
-gpca <- glmpca(assay(se_qc), L = 2, fam = "nb2")
-gpca.dat <- gpca$factors
+
 
 
 se_qc[table$`Gene (overexpressed)` %>% unlist %>% unique, ] %>% 
@@ -440,13 +440,59 @@ se_qc_dr <- se_qc %>% reduce_dimensions(method = "PCA")
 pca_plot <-
   se_qc_dr %>% 
   pivot_sample() %>% 
-  rename(`Sequencing coverage` = qc_coverage,
-         `Tissue type` = skin_type) %>% 
-  ggscatter(x = "PC1", y = "PC2", color = "Sequencing coverage", 
-            shape = "Tissue type", font.legend = c(10, "plain", "black"))
+  rename(`Sequencing depth` = qc_coverage,
+         `Tissue source` = skin_type) %>% 
+  ggscatter(x = "PC1", y = "PC2", 
+            color = "Sequencing depth", 
+            shape = "Tissue source", font.legend = c(11, "plain", "black"))
 
-ggsave("../data/pca.jpeg", pca_plot, width = 6, height = 5)
+ggsave("../data/pca.jpeg", pca_plot, width = 6.2, height = 5)
 ```
 
+```{r heatmap after QC}
+se_heatmap <- se_qc[,se_qc$qc_0_4 > 2]
+heatmap_data_m <-
+  scale(assay(se_heatmap, 1) %>% t() %>% log1p(), 
+        center = TRUE, scale = TRUE) %>% t()
+
+sample_site <- 
+  colData(se_heatmap) %>% as_tibble() %>% pull(biopsy_area) %>% unique()
+
+sample_site_color <- RColorBrewer::brewer.pal(length(sample_site), "Pastel2")
+names(sample_site_color) <- sample_site
+
+heatmap_annotation <- 
+  HeatmapAnnotation(
+    `Tissue source` = colData(se_heatmap) %>% as_tibble() %>% pull(skin_type), 
+    `Anatomic region` = colData(se_heatmap) %>% as_tibble() %>% pull(biopsy_area),
+    col = list(`Tissue source` = pca_color,
+               `Anatomic region` = sample_site_color),
+    annotation_legend_param = 
+      list(`Tissue source` = list(nrow = 1, title_gp = gpar(fontsize = 16),
+                                labels_gp = gpar(fontsize = 14)),
+           `Anatomic region` = list(nrow = 1, title_gp = gpar(fontsize = 16),
+                                    labels_gp = gpar(fontsize = 14))
+                                   ))
+
+heatmap <- ComplexHeatmap::Heatmap(heatmap_data_m,
+                        name = "gene expression",
+                        column_dend_reorder = TRUE,
+                        show_column_names = FALSE,
+                        show_row_names = F,
+                        show_row_dend = FALSE,
+                        row_names_gp = gpar(fontsize = 9),
+                        top_annotation = heatmap_annotation,
+                        heatmap_legend_param = list(
+                          title_gp = gpar(fontsize = 12),
+                          labels_gp = gpar(fontsize = 10)
+                          ),
+                        use_raster = F)
+
+jpeg(filename = "../figure/heatmap_allg.jpeg", width = 720*4, height = 624*4, quality = 100, res = 300)
+draw(heatmap, heatmap_legend_side = "right",
+     annotation_legend_side = "top", merge_legend = F)
+dev.off()
+
+```
 
 
