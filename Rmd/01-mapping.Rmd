@@ -148,12 +148,19 @@ for i in {1..5}; do brbseqtools CreateDGEMatrix \
 ```{bash demultiplexing data for GEO submission}
 module load jre/1.8.0 brbseqtools/1.6.0
 cd /home/projects/ku_00015/people/tuhu/multiomics-ad-sts/data
-mkdir -p ../demultiplex-fastq
+mkdir -p demultiplex-fastq
 for i in {1..5}; do brbseqtools Demultiplex \
 -r1 fastq_merged/${i}_R1.fastq.gz \
 -r2 fastq_merged/${i}_R2.fastq.gz \
 -c ../_tmp/batch_info_${i}.txt \
 -p B???????????????????? \
 -o demultiplex-fastq/${i} ; done
+```
+
+```{bash demultiplexing data fastqc}
+module load perl/5.30.2 fastqc/0.11.9
+mkdir -p demultiplex-fastqc
+cd demultiplex-fastqc
+fastqc ../demultiplex-fastq/*/*.fastq.gz
 ```
 
