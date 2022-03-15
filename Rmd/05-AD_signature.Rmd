@@ -14,7 +14,8 @@ pacman::p_load("dplyr", "tidyr", "purrr", "tidybulk", "tidySummarizedExperiment"
 ## AD signature
 ```{r load benchmark data}
 benchmark <- 
-  readRDS("../data/benchmark_table.rds") %>% group_by(contrast) %>% nest %>% 
+  readRDS("../data/benchmark_table.rds") %>% 
+  group_by(contrast) %>% nest %>% 
   mutate(gene_up = map(data, ~ .x$`Gene (overexpressed)` %>% unlist %>% unique %>% discard(~.x == "")),
          gene_down = map(data, ~ .x$`Gene (downexpressed)` %>% unlist %>% unique %>% discard(~.x == "")))
 

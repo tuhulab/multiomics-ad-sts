@@ -1,0 +1,59 @@
+---
+title: "Data submission to GEO"
+author: "Tu Hu"
+date: "3/15/2022"
+output: html_document
+---
+
+```{bash demultiplexing data for GEO submission}
+module load jre/1.8.0 brbseqtools/1.6.0
+cd /home/projects/ku_00015/people/tuhu/multiomics-ad-sts/data
+mkdir -p demultiplex-fastq
+for i in {1..5}; do brbseqtools Demultiplex \
+-r1 fastq_merged/${i}_R1.fastq.gz \
+-r2 fastq_merged/${i}_R2.fastq.gz \
+-c ../_tmp/batch_info_${i}.txt \
+-p B???????????????????? \
+-o demultiplex-fastq/${i} ; done
+```
+
+```{bash demultiplexing data fastqc}
+module load parallel/20200522 jdk/17 perl/5.30.2 fastqc/0.11.9
+cd /home/projects/ku_00015/people/tuhu/multiomics-ad-sts/data
+mkdir -p demultiplex-fastqc
+cd demultiplex-fastqc
+ls ../demultiplex-fastq/*/*.fastq.gz | parallel "fastqc {} -o ."
+
+module load anaconda3/4.4.0
+multiqc . -o .
+```
+
+```{r generate GEO metadata}
+readRDS("../data/se_qc.rds") %>% colData() %>% 
+  as_tibble() %>% 
+  filter(qc_0_4 > 2) %>% 
+  arrange(sample_name) %>% 
+  select(sample_name:biopsy_area) %>% 
+  select(-visit_quarter) %>% 
+  mutate(raw_file = paste0(sample_name %>% str_remove("_HC"), ".fastq.gz"),
+         source_name = "skin",
+         organism = "Homo sapiens",
+         molecule = "total RNA") %>% 
+  select(sample_name, source_name, organism, visit:biopsy_area, molecule, raw_file) %>% 
+  write.csv("../_tmp/geo_metadata.csv")
+```
+
+```{r files_to_upload}
+readr::read_csv("../_tmp/geo_metadata.csv") %>% 
+  pull(raw_file) %>% 
+  writeLines("../_tmp/file_to_GEO.txt")
+```
+
+```{r generate count_matrix.csv}
+count_matrix <-
+  assay(se_qc, 1) %>% as_tibble(rownames = "gene_name")
+colnames(count_matrix) <- colnames(count_matrix) %>% str_remove("_HC")
+readr::write_csv(count_matrix, "../_tmp/count_matrix.csv")
+tools::md5sum("../_tmp/count_matrix.csv")
+```
+

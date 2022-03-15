@@ -1,0 +1,23 @@
+---
+title: "Benchmark results for different count transformation and differential expression testing methods"
+author: "Tu Hu"
+date: "3/15/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(dplyr)
+library(purrr)
+library(stringr)
+```
+
+```{r}
+benchmark <- 
+  readRDS("../data/benchmark_table.rds")
+benchmark$`Gene (overexpressed)` <- benchmark$`Gene (overexpressed)` %>% lapply(str_c, collapse = ", ")
+benchmark$`Gene (downexpressed)` <- benchmark$`Gene (downexpressed)` %>% lapply(str_c, collapse = ", ")
+  # mutate(`Gene (overexpressed)` = map_chr(`Gene (overexpressed)`, stringr::str_c(collapse = ",")))
+DT::datatable(benchmark)
+```
+

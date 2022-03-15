@@ -1,5 +1,5 @@
 ---
-title: "Skin tape striping - Transformation and DE benchmark"
+title: "Skin tape striping - Benchmark (Transformation and DE benchmark)"
 author: "Tu Hu"
 date: "1/18/2022"
 output: html_document
