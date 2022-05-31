@@ -69,6 +69,8 @@ dge_ad_qc34_result <-
   )) %>% 
   pivot_wider(names_from = parameter) %>% 
   mutate(direction = ifelse(logFC > 0, "up", "down"))
+
+dge_ad_qc34_result %>% filter(test == "TMM") %>% saveRDS("data/FC_LSvsNL_voom.rds")
 ```
 
 ### limma voom
@@ -139,7 +141,7 @@ se_MT_normalized_DE <-
 ### NOISeq
 ```{r}
 library(NOISeq)
-mydata <- readData(data = se_ad_q34 %>% scale_abundance(method = "TMMwsp") %>% assay(2),
+mydata <- readData(data = se_ad_q34 %>% scale_abundance(method = "TMM") %>% assay(2),
                  factors = colData(se_ad_q34)
 )
 
@@ -399,8 +401,13 @@ DT::datatable(table)
 ```{r upset}
 library(ComplexHeatmap)
 upset_table <- table[c(2,3,6,7,8,10,11,12),]
+upset_table <-
+upset_table %>% 
+  mutate(`Gene.(overexpressed)` = `Gene.(overexpressed)` %>% str_split(","))
 
-lt <- upset_table$`Gene (overexpressed)`
+lt <- 
+  upset_table$`Gene.(overexpressed)` %>% map(str_remove, pattern = " ")
+
 names(lt) <- 
   paste(upset_table$transformation)
 names(lt)[3] <- "Voom-trend"
@@ -409,7 +416,9 @@ names(lt)[5] <- "Mitochondrial"
 names(lt)[6:8] <- c("NOIseq-top5%", "NOIseq-top20", "NOIseq-top10")
 
 lt_upset <- list_to_matrix(lt) %>% make_comb_mat()
+jpeg("../figure/figure3.jpeg", width = 480*7, height = 480*3.5, quality =300, res =  400)
 UpSet(lt_upset, comb_order = order(comb_size(lt_upset), decreasing = T))
+dev.off()
 ```
 
 ```{r save, eval=FALSE}

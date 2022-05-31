@@ -29,6 +29,8 @@ multiqc . -o .
 ```
 
 ```{r generate GEO metadata}
+library(dplyr)
+library(stringr)
 readRDS("../data/se_qc.rds") %>% colData() %>% 
   as_tibble() %>% 
   filter(qc_0_4 > 2) %>% 
@@ -50,10 +52,21 @@ readr::read_csv("../_tmp/geo_metadata.csv") %>%
 ```
 
 ```{r generate count_matrix.csv}
+se_qc <- readRDS("../data/se_qc.rds")
+se_qc_geo <- se_qc[, se_qc$qc_0_4 > 2]
 count_matrix <-
-  assay(se_qc, 1) %>% as_tibble(rownames = "gene_name")
+  assay(se_qc_geo, 1) %>% as_tibble(rownames = "gene_name")
 colnames(count_matrix) <- colnames(count_matrix) %>% str_remove("_HC")
+
 readr::write_csv(count_matrix, "../_tmp/count_matrix.csv")
 tools::md5sum("../_tmp/count_matrix.csv")
+```
+
+```{r generate sample metadata}
+readRDS("../data/se_qc.rds") %>% colData() %>% 
+  as_tibble() %>% 
+  rename(qc_sequencing_depth = qc_coverage) %>% 
+  arrange(sample_name) %>% 
+  readr::write_csv("../_tmp/sample_metadata.csv")
 ```
 

@@ -11,7 +11,7 @@ pacman::p_load("tidybulk", "tidySummarizedExperiment",
                "tidyr", "dplyr", "stringr",
                "limma", "SummarizedExperiment", 
                "DESeq2", "BiocParallel",
-               "tibble", "ggpubr", "purrr")
+               "tibble", "ggpubr", "purrr", "forcats")
 core_n <- future::availableCores()
 register(MulticoreParam(ifelse(core_n <= 8, core_n - 2, core_n / 2)))
 ```
@@ -65,8 +65,9 @@ se_tape_AD_FC <-
   group_by(subject_visit, feature) %>% nest %>% 
   mutate(FC_tape = map_dbl(data, ~ log2(.x$counts_scaled[2] / .x$counts_scaled[1]))) %>% 
   select(-data)
-```
 
+
+```
 
 ## biopsy data
 ```{r collapse libraries, warning=FALSE}
@@ -191,10 +192,10 @@ cor.test(tape_biopsy_s_res_t$r_spearman,
 
 RNAyield_cor_g <-
   tape_biopsy_s_res_t %>% 
-  rename(`Tissue source` = "skin_type") %>% 
+  rename(`Tissue state` = "skin_type") %>% 
   ggscatter(y = "r_spearman", 
             x = "counts_sum", 
-            color = "Tissue source",
+            color = "Tissue state",
             palette = c("LS" = "#eb2d0c", 
                         "NL" = "#eb8b9b", 
                         "HC" = "#91cf60"), 
@@ -202,7 +203,8 @@ RNAyield_cor_g <-
             add = "reg.line",
             add.params = list(color = "grey"),
             ylab = "Correlation coefficient",
-            xlab = "RNA yield")
+            xlab = "Total counts") +
+  scale_x_log10(labels = scales::label_log())
 
 ggsave("../figure/F4_RNAyield_cor.jpeg",
        RNAyield_cor_g, width = 5, height = 5)
@@ -230,24 +232,11 @@ tape_biopsy_g_res <-
   return(r)
 })
 
-# fold-change -----------------
-
-
-
-
-
 # result    -------------------
-
-
-
 tape_biopsy_g_res_t <- 
   tibble(gene = tape_biopsy_g_res %>% map_chr(~ .x $gene),
          spearman_correlation_coefficient = tape_biopsy_g_res %>% map_dbl(~ .x $r_spearman$estimate),
          p_value = tape_biopsy_g_res %>% map_dbl(~ .x $r_spearman$p.value))
-  
-
-
-
 
 tibble(
   gene_name = rownames(expr_biopsy_m),
@@ -264,6 +253,164 @@ tibble(
 ) %>% 
   ggplot(aes(tape_s, biopsy_s)) + geom_point()
 
+
+```
+
+## Compare with Julie's & Emma's 
+```{r load data (Hu and Julies)}
+
+# Emma
+Emma_raw <- 
+  openxlsx::read.xlsx("../data/Guttman-Yassky_JAMA_Dermatol_2019_Figure3.xlsx", startRow = 2) %>% as_tibble()
+
+Emma_raw_sig <-
+  Emma_raw %>% 
+  mutate(across(2:4, str_detect, pattern = "a|b|c"))
+
+Emma_raw_FC <-
+  Emma_raw %>% 
+  mutate(across(2:4, str_remove, "a|b|c"))
+
+Emma_DEG_g <- 
+  Emma_raw$Biomarker[Emma_raw_sig$NLvsN | Emma_raw_sig$LSvsN | Emma_raw_sig$LSvsNL]
+
+Emma_DEG <- 
+  Emma_raw_FC %>% filter(Biomarker %in% Emma_DEG_g) %>% 
+  mutate(direction = ifelse(LSvsN > 0, "up", "down"))
+
+# Dyjack ---
+Dyjack <-
+  openxlsx::read.xlsx("../data/Dyjack.xlsx", startRow = 2) %>% 
+  as_tibble()
+
+
+# Hu ----
+FC_Hu <- 
+  readr::read_rds("../data/FC_LSvsNL_voom.rds") %>% 
+  select(feature, logFC) %>% 
+  filter(feature %in% g_to_compare_FC)
+
+# Biopsy Hu ----
+FC_biopsy <-
+  readr::read_csv(url("https://cdn.jsdelivr.net/gh/tuhulab/Shiny_AD_time_space@master/data/table_s2.csv"))
+
+
+# Julie ---
+FC_Julie <- 
+  readr::read_tsv("../data/Julie/tape_LSvsNL.txt") %>% 
+  select(Gene_ID, Difference)
+
+
+
+## Venn up -----
+Dyjack %>% pull(Gene) %>% clipr::write_clip()
+FC_Hu %>% pull(feature) %>% clipr::write_clip()
+FC_Julie %>% pull(Gene_ID) %>% 
+  clipr::write_clip()
+
+
+# ## Venn down -----
+# Dyjack %>% filter(Log2FC < 0) %>% pull(Gene) %>% clipr::write_clip()
+# FC_Hu %>% filter(logFC < 0) %>% pull(feature) %>% clipr::write_clip()
+# FC_Julie %>% filter(Difference < 0) %>% pull(Gene_ID) %>% 
+#   clipr::write_clip()
+
+
+
+FC_two_studies <-
+  FC_Julie %>% 
+  left_join(FC_Hu, by = c("Gene_ID" = "feature")) %>% 
+  mutate(Gene_ID = fct_reorder(Gene_ID, logFC ))
+
+two_studies_g <- 
+  FC_two_studies %>% 
+  # slice_head(n = 8) %>% 
+  rename(Sølberg = Difference,
+         Hu = logFC) %>% 
+  pivot_longer(-Gene_ID, names_to = "Study",
+               values_to = "logFC") %>% 
+  # filter(Gene_ID %in% c("MAPK12", "SPRR2G")) %>% 
+  ggplot(aes(Gene_ID, logFC, fill = Study)) +
+  geom_col(position = position_dodge()) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=.5))
+  # facet_wrap(~Gene_ID)
+
+ggsave("../figure/SølbergvsHu.pdf", 
+       two_studies_g, width = 25, height = 5)
+
+cor.test(FC_two_studies$Difference, FC_two_studies$logFC, method = "spearman")
+```
+
+
+```{r Enrichment}
+## enrichr -----
+library(enrichR)
+enrich_Dyjack <-
+  enrichr(Dyjack %>% filter(Log2FC > 0) %>% pull(Gene),
+          c("GO_Biological_Process_2021", "KEGG_2021_Human")) %>% reduce(bind_rows) %>% 
+  mutate(study = "Dyjack 2018")
+
+enrich_Hu <-
+    enrichr(FC_Hu %>% filter(logFC > 0) %>% pull(feature),
+          c("GO_Biological_Process_2021", "KEGG_2021_Human")) %>% reduce(bind_rows) %>% 
+  mutate(study = "GENAD")
+
+enrich_Julie <-
+  enrichr(FC_Julie %>% filter(Difference > 0) %>% pull(Gene_ID),
+          c("GO_Biological_Process_2021", "KEGG_2021_Human")) %>% reduce(bind_rows) %>% 
+  mutate(study = "Sølberg 2021")
+
+enrichment <- 
+  bind_rows(enrich_Dyjack, enrich_Hu, enrich_Julie) %>% 
+  as_tibble() %>% filter(Term %in% c("keratinocyte differentiation (GO:0030216)",
+                                     "inflammatory response (GO:0006954)",
+                                     "cytokine-mediated signaling pathway (GO:0019221)",
+                                     "regulation of T cell activation (GO:0050863)",
+                                     "epidermal cell differentiation (GO:0009913)")) %>% 
+  select(Term, Adjusted.P.value, Odds.Ratio, study) %>% 
+  mutate(`-log10p` = - log10(Adjusted.P.value),
+         theme = case_when(Term %in% c("keratinocyte differentiation (GO:0030216)",
+                                       "epidermal cell differentiation (GO:0009913)") ~ "Epidermal structure",
+                           TRUE ~ "Inflammation"),
+         study = forcats::fct_relevel(study, c("Dyjack 2018", "Sølberg 2021", "GENAD")))
+
+enrichment_g <-
+  enrichment %>% 
+    ggplot(aes(study, Term, size = `-log10p`, color = `-log10p`)) +
+    geom_point() +
+    facet_grid(theme~., scales = "free", space = "free") +
+    scale_size_area(max_size = 8) +
+    scale_color_gradient2(low = "blue", mid = "pink", high = "red") +
+    scale_x_discrete(position = "top") +
+    theme_bw() +
+    theme(axis.title.x = element_blank(), 
+          axis.title.y = element_blank(),
+          axis.text.y = element_text(size = 10),
+          axis.text.x = element_text(size = 9))
+enrichment_g
+ggsave("../data/g_enrichment.jpeg", enrichment_g, width = 7.2, height = 3.5, dpi = 600)
+
+```
+
+
+```{r}
+tape_biopsy_FC_g <- 
+  FC_Hu %>% filter(feature %in% g_to_compare_FC) %>% 
+  left_join(FC_biopsy %>% filter(gene_name %in% g_to_compare_FC,
+                     contrast %in% c("LSvsNL")) %>% 
+              select(gene_name, log2FoldChange),
+            by = c("feature" = "gene_name")) %>% 
+  mutate(feature = fct_reorder(feature, logFC )) %>% 
+  rename(Biopsy = log2FoldChange,
+         Tape = logFC) %>% 
+  pivot_longer(-feature, names_to = "Study",
+               values_to = "logFC") %>% 
+  # filter(Gene_ID %in% c("MAPK12", "SPRR2G")) %>% 
+  ggplot(aes(feature, logFC, fill = Study)) +
+  geom_col(position = position_dodge()) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=.5))
+ggsave("../figure/BiopsyvsTape.pdf", 
+       tape_biopsy_FC_g, width = 25, height = 5)
 
 ```
 
@@ -302,7 +449,7 @@ cor_group_g <-
                 "NL" = "#eb8b9b", 
                 "HC" = "#91cf60"),
             legend = "none", 
-            xlab = "Tissue source",
+            xlab = "Tissue state",
             ylab = "Correlation coefficient") + 
   stat_compare_means(comparisons = list(
     c("HC", "NL"),  

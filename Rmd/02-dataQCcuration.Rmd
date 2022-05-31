@@ -92,7 +92,6 @@ ggsave("../data/figure/MT_ratio.jpeg", MT_ratio, height = 5)
 
 ```{r keep only protein coding genes, message=FALSE, warning=FALSE, eval=FALSE}
 g <- counts$Gene_name
-genes <- c(counts$Gene_name)
 mart <- biomaRt::useMart("ENSEMBL_MART_ENSEMBL")
 mart <- biomaRt::useDataset("hsapiens_gene_ensembl", mart)
 annotLookup <- biomaRt::getBM(
@@ -230,11 +229,10 @@ We tested RNA yield variation using linear mixed effect model.
 ```{r RNA yield - skin type}
 colData(se)$counts_sum <- counts_sum$counts_sum
 
-rna_yield_skin_type_g <- 
+rna_yield_skin_type_g <-
   se %>% pivot_sample() %>% 
   ggboxplot(x = "skin_type", 
             y = "counts_sum", 
-            yscale = "log10",
             add = c("jitter"), 
             color = "skin_type",
             palette = pca_color,
@@ -245,11 +243,28 @@ rna_yield_skin_type_g <-
     c("NL", "LS"),
     c("HC", "LS")
   ), methods= "t.test") +
-  theme(legend.position = "none")
-# ggsave("../figure/RNA_yield_skin_type.jpeg",
-#        width = 5, height = 5, units = "in",
-#        rna_yield_skin_type_g)
+  theme(legend.position = "none") + 
+  scale_y_log10(labels = scales::label_log())
+ggsave("../figure/RNA_yield_skin_type.jpeg", dpi = 400,
+       width = 5, height = 5, units = "in",
+       rna_yield_skin_type_g)
 ```
+
+```{r}
+rna_yield_biopsy_area_g <- 
+  se %>% pivot_sample() %>% 
+  ggboxplot(x = "biopsy_area", 
+            y = "counts_sum", 
+            yscale = "log10",
+            add = c("jitter"), 
+            color = "skin_type",
+            palette = pca_color,
+            xlab = "Tissue source",
+            ylab = "Total counts")
+ggsave("../figure/RNA_yield_biopsy_area.png", 
+       rna_yield_biopsy_area_g, width = 9)
+```
+
 
 ```{r RNA yield - season}
 rna_yield_season_g <- 
@@ -257,21 +272,21 @@ rna_yield_season_g <-
   filter(!is.na(visit_quarter)) %>% 
   ggboxplot(x = "visit_quarter", 
             y = "counts_sum", 
-            yscale = "log10",
             add = c("jitter"), 
             color = "visit_quarter",
             xlab = "Quarter",
             ylab = "Total counts") +
-    stat_compare_means(comparisons = list(
-    c("Q1", "NL"),
-    c("NL", "LS"),
-    c("HC", "LS")
-    ), methods= "t.test")+
-  stat_compare_means(method = "anova") +
-  theme(legend.position = "none")
-# ggsave("../figure/RNA_yield_season.jpeg", 
-#        width = 5, height = 5, units = "in", 
-#        rna_yield_season_g)
+    # stat_compare_means(comparisons = list(
+    # c("Q1", "NL"),
+    # c("NL", "LS"),
+    # c("HC", "LS")
+    # ), methods= "t.test") +
+  # stat_compare_means(method = "anova") +
+  theme(legend.position = "none") +
+  scale_y_log10(labels = scales::label_log())
+ggsave("../figure/RNA_yield_season.jpeg", dpi = 400,
+       width = 5, height = 5, units = "in",
+       rna_yield_season_g)
 ```
 
 ```{r rna-yield-lme}
@@ -415,25 +430,10 @@ which(gene_detection$feature == "ACTG1")
 gene_detection$feature[1:500] %>% writeLines("../_tmp/gene_expressed.txt")
 ```
 
-
-## Heatmap
-
-## GLMPCA
-```{r glmpca}
-### PCA plot using generalized PCA
-
+## PCA
+```{r PCA}
+### PCA plot
 se_qc <- readr::read_rds("../data/se_qc.rds")
-
-
-
-se_qc[table$`Gene (overexpressed)` %>% unlist %>% unique, ] %>% 
-  pivot_sample() %>% 
-  left_join(gpca$factors %>% as_tibble(rownames = "sample")) %>% 
-  ggplot(aes(x = dim1, y = dim2, color = skin_type)) +
-  geom_point() +
-  theme_classic()
-  # scale_color_manual()
-
 
 se_qc_dr <- se_qc %>% reduce_dimensions(method = "PCA")
 
@@ -441,16 +441,30 @@ pca_plot <-
   se_qc_dr %>% 
   pivot_sample() %>% 
   rename(`Sequencing depth` = qc_coverage,
-         `Tissue source` = skin_type) %>% 
-  ggscatter(x = "PC1", y = "PC2", 
+         `Tissue state` = skin_type) %>% 
+  ggscatter(x = "PC1", 
+            y = "PC2", 
+            xlab = paste0("PC1(",
+                         scales::label_percent()(summary(attr(se_qc_dr, "internals")$PCA)$importance[2,1]),
+                         ")"),
+            ylab = paste0("PC2(",
+                         scales::label_percent()(summary(attr(se_qc_dr, "internals")$PCA)$importance[2,2]),
+                         ")"),
             color = "Sequencing depth", 
-            shape = "Tissue source", font.legend = c(11, "plain", "black"))
+            shape = "Tissue state", font.legend = c(11, "plain", "black")) +
+  scale_y_continuous(
+    labels = signs::signs_format(accuracy = 1)
+  )
 
-ggsave("../data/pca.jpeg", pca_plot, width = 6.2, height = 5)
+ggsave("../figure/pca.jpeg", pca_plot, width = 6.2, height = 5)
 ```
 
 ```{r heatmap after QC}
 se_heatmap <- se_qc[,se_qc$qc_0_4 > 2]
+colData(se_heatmap)$biopsy_area <- 
+  colData(se_heatmap)$biopsy_area %>% 
+  str_replace_all("_", " ")
+
 heatmap_data_m <-
   scale(assay(se_heatmap, 1) %>% t() %>% log1p(), 
         center = TRUE, scale = TRUE) %>% t()
@@ -461,18 +475,23 @@ sample_site <-
 sample_site_color <- RColorBrewer::brewer.pal(length(sample_site), "Pastel2")
 names(sample_site_color) <- sample_site
 
+
 heatmap_annotation <- 
   HeatmapAnnotation(
-    `Tissue source` = colData(se_heatmap) %>% as_tibble() %>% pull(skin_type), 
+    `Tissue state` = colData(se_heatmap) %>% as_tibble() %>% pull(skin_type), 
     `Anatomic region` = colData(se_heatmap) %>% as_tibble() %>% pull(biopsy_area),
-    col = list(`Tissue source` = pca_color,
+    # `Sequencing depth` = colData(se_heatmap) %>% as_tibble() %>% pull(qc_coverage),
+    col = list(`Tissue state` = c("LS" = "#eb2d0c", "NL" = "#eb8b9b", "HC" = "#91cf60"),
                `Anatomic region` = sample_site_color),
     annotation_legend_param = 
-      list(`Tissue source` = list(nrow = 1, title_gp = gpar(fontsize = 16),
+      list(`Tissue state` = list(nrow = 1, title_gp = gpar(fontsize = 16),
                                 labels_gp = gpar(fontsize = 14)),
            `Anatomic region` = list(nrow = 1, title_gp = gpar(fontsize = 16),
-                                    labels_gp = gpar(fontsize = 14))
-                                   ))
+                                    labels_gp = gpar(fontsize = 14)))
+           # `Sequencing depth` = list(nrow = 1, title_gp = gpar(fontsize = 16),
+           #                          labels_gp = gpar(fontsize = 14))
+           #                         )
+    )
 
 heatmap <- ComplexHeatmap::Heatmap(heatmap_data_m,
                         name = "gene expression",

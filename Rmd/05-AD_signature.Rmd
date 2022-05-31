@@ -34,9 +34,28 @@ gene_down_plot <-
 
 library("gplots")
 
+heatmap_DEG <- 
+  se_qc_cpm[c(gene_up_plot, gene_down_plot),] %>% 
+  t() %>% scale %>% 
+  t %>% 
+  heatmap.2(col = bluered(100), 
+            density.info = "none", trace = "none", 
+            dendrogram = "row", keysize = 1, 
+            margins = c(5,5), lhei = c(.8,7))
+
+heatmap_DEG <- 
+  se_qc_cpm[c(gene_up_plot, gene_down_plot),] %>% 
+  t() %>% scale %>% 
+  t %>% 
+  heatmap.2() 
+
+
 jpeg("../figure/heatmap_DEG.jpeg", width = 20, 
      height = 30, units = "cm", res = 300)
-se_qc_cpm[c(gene_up_plot, gene_down_plot),] %>% t() %>% scale %>% t %>% heatmap.2(col = bluered(100), density.info = "none", trace = "none", dendrogram = "row", keysize = 1, margins = c(5,5), lhei = c(.8,7))
+  se_qc_cpm[c(gene_up_plot, gene_down_plot),] %>% 
+  t() %>% scale %>% 
+  t %>% 
+  heatmap.2(col = bluered(100), density.info = "none", trace = "none", dendrogram = "row", keysize = 1, margins = c(5,5), lhei = c(.8,7))
 dev.off()
 
 # gene_description <- 
@@ -47,12 +66,16 @@ dev.off()
 
 ```{r heatmap}
 se_qc_scale <- se_qc[,se_qc$qc_0_4>2] %>% scale_abundance()
+colData(se_qc_scale)$biopsy_area <- 
+  colData(se_qc_scale)$biopsy_area %>% 
+  str_replace_all("_", " ")
 
 se_qc_deg <- 
   se_qc_scale[c(gene_up_plot, gene_down_plot), ]
 se_qc_deg$skin_type <- 
   forcats::fct_relevel(se_qc_deg$skin_type,
                        c("HC", "NL", "LS"))
+
 
 heatmap_data_m_top100 <-
   scale(se_qc_deg %>% assay(2) %>% t() %>% log1p(),
@@ -65,14 +88,14 @@ names(sample_site_color) <- sample_site
 
 heatmap_annotation <- 
   HeatmapAnnotation(
-    `Tissue source` = colData(se_qc_deg) %>% as_tibble() %>% pull(skin_type), 
+    `Tissue state` = colData(se_qc_deg) %>% as_tibble() %>% pull(skin_type), 
     `Anatomic region` = colData(se_qc_deg) %>% as_tibble() %>% pull(biopsy_area),
-    col = list(`Tissue source` = c("HC" = "#91cf60",
+    col = list(`Tissue state` = c("HC" = "#91cf60",
                                    "NL" = "#eb8b9b", 
                                    "LS" = "#eb2d0c"),
                `Anatomic region` = sample_site_color),
     annotation_legend_param = 
-      list(`Tissue source` = list(nrow = 1, title_gp = gpar(fontsize = 12),
+      list(`Tissue state` = list(nrow = 1, title_gp = gpar(fontsize = 12),
                                 labels_gp = gpar(fontsize = 10)),
            `Anatomic region` = list(nrow = 1, title_gp = gpar(fontsize = 12),
                                     labels_gp = gpar(fontsize = 10))
@@ -96,7 +119,7 @@ heatmap_top100 <- ComplexHeatmap::Heatmap(heatmap_data_m_top100,
                         row_title_rot = 0,
                         row_title_side = "right")
 
-jpeg(filename = "../figure/heatmap_DEG.jpeg", width = 720*4, 
+jpeg(filename = "../figure/heatmap_DEG_all.jpeg", width = 720*4, 
      height = 624*4, quality = 100, res = 300)
 draw(heatmap_top100, heatmap_legend_side = "right",
      annotation_legend_side = "top", merge_legend = FALSE)
