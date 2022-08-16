@@ -1,4 +1,4 @@
-# Multi-omics AD PhD project: skin tape stripping
+# AD epidermal transcriptome by tape stripping
 
 This repo documents the  data analysis pipeline in reproducible R markdown files for Multi-omics AD PhD skin tape project, submitted as [**Hu, T et al.  Profiling the Atopic Dermatitis Epidermal Transcriptome by Tape Stripping and BRB-seq . Int. J. Mol. Sci. 2022, 23 (11), 6140**](https://doi.org/10.3390/ijms23116140)
 ## Data
