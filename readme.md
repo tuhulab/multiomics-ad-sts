@@ -1,8 +1,8 @@
-# Multi-omics AD PhD STS (skin tape stripping)
+# Multi-omics AD PhD project: skin tape stripping
 
-This repo documents the  data analysis pipeline in reproducible R markdown for Multi-omics AD PhD skin tape project, submitted as [**Hu, T et al.  Investigation of the Atopic Dermatitis Epidermal Transcrip-tome by Tape Stripping and Ultra-low Cost BRB-seq . Int. J. Mol. Sci. 2022, 23, x**](https://doi.org/10.3390/xxxxx)
+This repo documents the  data analysis pipeline in reproducible R markdown files for Multi-omics AD PhD skin tape project, submitted as [**Hu, T et al.  Profiling the Atopic Dermatitis Epidermal Transcriptome by Tape Stripping and BRB-seq . Int. J. Mol. Sci. 2022, 23 (11), 6140**](https://doi.org/10.3390/ijms23116140)
 ## Data
-Data is deposited on GEO under the accession GSExxxxx (pending approval).
+Data is deposited on GEO under the accession [GSE199046](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE199046).
 ## Code
 | Rmd                             | description                                                                                     |
 |---------------------------------|-------------------------------------------------------------------------------------------------|
